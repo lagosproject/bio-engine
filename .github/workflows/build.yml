@@ -3,6 +3,7 @@ name: Build and Release Bio-Engine
 on:
   release:
     types: [created] # This triggers automatically when you publish a new Release on GitHub
+  workflow_dispatch: # This allows you to manually press a "Run workflow" button from the Actions tab
 
 jobs:
   build:
