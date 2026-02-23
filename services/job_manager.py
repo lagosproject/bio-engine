@@ -8,6 +8,7 @@ saving job state using JSON files in the local filesystem.
 """
 
 import logging
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -301,3 +302,113 @@ class JobManager:
 
         jobs.sort(key=lambda x: x.created_at, reverse=True)
         return jobs
+
+    def export_job(self, job_id: str, level: str, target_folder: str | None = None) -> str:
+        """
+        Exports a job to a shareable directory.
+        """
+        job = self.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+
+        if not target_folder:
+            target_folder = str(Path.home() / "Downloads")
+
+        export_dir = Path(target_folder) / f"job_{job.name}_{job.id[:8]}_export"
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        job_copy = job.model_copy(deep=True)
+
+        if level == "full":
+            reads_dir = export_dir / "reads"
+            reads_dir.mkdir(exist_ok=True)
+            
+            # Copy read files
+            for patient in job_copy.patients:
+                for read in patient.get("reads", []):
+                    if "file" in read and read["file"]:
+                        original_path = Path(read["file"])
+                        if original_path.exists():
+                            new_path = reads_dir / original_path.name
+                            shutil.copy2(original_path, new_path)
+                            read["file"] = str(new_path)
+
+            reference: dict[str, str] = job_copy.reference # type: ignore
+            
+            # Copy reference file if applicable
+            if isinstance(reference, dict) and reference.get("type") == "file":
+                ref_val = reference.get("value")
+                if ref_val:
+                    original_ref = Path(ref_val)
+                    if original_ref.exists():
+                        ref_dir = export_dir / "reference"
+                        ref_dir.mkdir(exist_ok=True)
+                        new_ref = ref_dir / original_ref.name
+                        shutil.copy2(original_ref, new_ref)
+                        reference["value"] = str(new_ref)
+        
+        elif level == "results_only":
+            job_copy.readonly = True
+        
+        # Save JSON
+        json_path = export_dir / f"{job.id}.json"
+        with open(json_path, "wb") as f:
+            f.write(orjson.dumps(job_copy.model_dump(), option=orjson.OPT_INDENT_2))
+            
+        return str(export_dir)
+
+    def import_job(self, source_folder: str) -> Job:
+        """
+        Imports a job from an exported folder.
+        """
+        source_dir = Path(source_folder)
+        json_files = list(source_dir.glob("*.json"))
+        if not json_files:
+            raise ValueError(f"No job JSON found in {source_folder}")
+            
+        json_path = json_files[0]
+        
+        with open(json_path, "rb") as f:
+            data = orjson.loads(f.read())
+            
+        job = Job(**data)
+        
+        if not job.readonly:
+            # Full import: copy files to internal persistent storage
+            internal_data_dir = self.jobs_dir / f"{job.id}_data"
+            internal_data_dir.mkdir(parents=True, exist_ok=True)
+            
+            reads_dir = source_dir / "reads"
+            if reads_dir.exists():
+                internal_reads_dir = internal_data_dir / "reads"
+                internal_reads_dir.mkdir(exist_ok=True)
+                for patient in job.patients:
+                    for read in patient.get("reads", []):
+                        if "file" in read and read["file"]:
+                            old_path = Path(read["file"])
+                            # In exported job, path might be absolute to the export folder.
+                            # Just grab by name from reads_dir.
+                            actual_source = reads_dir / old_path.name
+                            if actual_source.exists():
+                                new_path = internal_reads_dir / old_path.name
+                                shutil.copy2(actual_source, new_path)
+                                read["file"] = str(new_path)
+                                
+            reference = job.reference
+            if isinstance(reference, dict) and reference.get("type") == "file":
+                ref_dir = source_dir / "reference"
+                ref_val = reference.get("value")
+                if ref_dir.exists() and ref_val:
+                    old_path = Path(ref_val)
+                    actual_ref = ref_dir / old_path.name
+                    if actual_ref.exists():
+                        internal_ref_dir = internal_data_dir / "reference"
+                        internal_ref_dir.mkdir(exist_ok=True)
+                        new_ref = internal_ref_dir / old_path.name
+                        shutil.copy2(actual_ref, new_ref)
+                        reference["value"] = str(new_ref)
+                        
+        self._save_job(job)
+        logger.info(f"Imported job {job.id} from {source_folder}")
+        return job
+

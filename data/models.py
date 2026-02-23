@@ -98,6 +98,7 @@ class Job(BaseModel):
     app_version: str | None = None
     config: TracyConfig | None = None
     hgvs_config: HGVSConfig | None = None
+    readonly: bool = False
 
     # Use Field(default_factory=...) to avoid mutable default issues
     comments: dict[str, list[Comment]] = Field(default_factory=dict)
@@ -130,6 +131,17 @@ class AddCommentRequest(BaseModel):
 class AddHGVSAlternativesRequest(BaseModel):
     principal_hgvs: str
     alternatives: list[str]
+
+class ShareLevel(str, Enum):
+    FULL = "full"
+    RESULTS_ONLY = "results_only"
+
+class ShareJobRequest(BaseModel):
+    level: ShareLevel
+    target_folder: str | None = None
+
+class ImportJobRequest(BaseModel):
+    source_folder: str
 
 class FilePaths(BaseModel):
     ref_path: str

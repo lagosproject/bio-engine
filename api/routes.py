@@ -17,9 +17,11 @@ from data.models import (
     AddHGVSAlternativesRequest,
     CreateJobRequest,
     HGVSRequest,
+    ImportJobRequest,
     Job,
     JobStatus,
     RenameJobRequest,
+    ShareJobRequest,
     UpdateJobRequest,
 )
 from services import aligner as aligner_service
@@ -291,3 +293,31 @@ def hgvs_alternatives(request: HGVSRequest):
     except Exception as e:
         logger.error(f"HGVS alternatives fetch failed: {e}")
         raise BioEngineError(f"HGVS alternatives fetch failed: {e}")
+
+@router.post("/jobs/{job_id}/share", response_model=dict)
+def share_job(job_id: str, request: ShareJobRequest):
+    """
+    Exports a job to a local directory for sharing.
+    """
+    try:
+        export_path = job_manager.export_job(
+            job_id=job_id,
+            level=request.level.value,
+            target_folder=request.target_folder
+        )
+        return {"status": "success", "export_path": export_path}
+    except Exception as e:
+        logger.error(f"Failed to export job {job_id}: {e}")
+        raise BioEngineError(f"Failed to export job {job_id}: {e}")
+
+@router.post("/jobs/import", response_model=Job)
+def import_job(request: ImportJobRequest):
+    """
+    Imports a shared job from a local directory back into the engine.
+    """
+    try:
+        job = job_manager.import_job(request.source_folder)
+        return job
+    except Exception as e:
+        logger.error(f"Failed to import job from {request.source_folder}: {e}")
+        raise BioEngineError(f"Failed to import job: {e}")
