@@ -11,16 +11,8 @@ binaries = []
 
 import shutil
 
-# Try to find Tracy in the PATH or Conda environment
-tracy_path = shutil.which('tracy')
-if not tracy_path and os.path.exists(os.path.join(conda_prefix, 'bin', 'tracy')):
-    tracy_path = os.path.join(conda_prefix, 'bin', 'tracy')
+# Tracy will be handled by Tauri, not bundled here
 
-if tracy_path:
-    print(f"Bundling Tracy binary from: {tracy_path}")
-    binaries.append((tracy_path, '.'))
-else:
-    print("WARNING: tracy binary not found. It will not be bundled.")
 
 # Optionally include these shared libraries only if they exist (Linux/Conda specific fixes)
 for lib in ['libcrypto.so.3', 'libssl.so.3']:
