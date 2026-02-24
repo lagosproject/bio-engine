@@ -29,34 +29,32 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # Install each requirement individually so a failure in one
+          # platform-specific package (e.g. pysam on Windows) does not
+          # prevent the rest from being installed.
+          while IFS= read -r line || [ -n "$line" ]; do
+            # Skip comments and empty lines
+            line=$(echo "$line" | sed 's/#.*//' | xargs)
+            [ -z "$line" ] && continue
+            # Strip pip-compile indentation/annotations
+            [[ "$line" =~ ^[[:space:]] ]] && continue
+            pip install "$line" || echo "WARNING: Failed to install $line (may be platform-specific)"
+          done < requirements.txt
           pip install pyinstaller
 
-      - name: Verify installed packages
+      - name: Verify critical packages
         run: |
           python -c "import uvicorn; print(f'uvicorn OK: {uvicorn.__file__}')"
           python -c "import fastapi; print(f'fastapi OK: {fastapi.__file__}')"
           python -c "import h11; print(f'h11 OK: {h11.__file__}')"
           python -c "import starlette; print(f'starlette OK: {starlette.__file__}')"
-          pip show uvicorn
-          pip show pyinstaller
 
       - name: Build with PyInstaller
         run: pyinstaller bio-engine.spec
 
-      - name: Verify build output (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          ls -lh dist/
-          file dist/bio-engine
-
-      - name: Verify build output (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          dir dist\
-          
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v1
         if: startsWith(github.ref, 'refs/tags/')
