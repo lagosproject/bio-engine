@@ -180,6 +180,46 @@ def get_fasta_sequence(ref_input: str) -> str:
         return str(record.seq)
 
 
+def get_lrg_mapping(accession: str) -> str | None:
+    """
+    Attempts to resolve an LRG (Locus Reference Genomic) equivalent for a RefSeq accession.
+    Many NG_ records are mirrors of LRG_ records which Ensembl understands better.
+    """
+    if not accession.startswith("NG_"):
+        return None
+
+    # Determine potential GenBank path in cache
+    gb_path = os.path.join(settings.cache_dir, f"{accession}.gb")
+    if not os.path.exists(gb_path):
+        # Try to load it if possible
+        try:
+            load_reference(accession)
+        except:
+            return None
+    
+    if not os.path.exists(gb_path):
+        return None
+
+    try:
+        import re
+        record = SeqIO.read(gb_path, "genbank")
+        desc = record.description
+        # Pattern: ... (LRG_766) ...
+        match = re.search(r"\(LRG_(\d+)\)", desc)
+        if match:
+            return f"LRG_{match.group(1)}"
+        
+        # Also check db_xref in source features
+        for feature in record.features:
+            if feature.type == "source":
+                for xref in feature.qualifiers.get("db_xref", []):
+                    if xref.startswith("LRG:"):
+                        return xref.replace("LRG:", "LRG_")
+    except Exception as e:
+        logger.error(f"Failed to parse LRG mapping from {gb_path}: {e}")
+    
+    return None
+
 def ensure_indexed(ref_path: str) -> str:
     """Compresses and indexes a large reference file. Handles recovery from bad indices."""
     if not shutil.which("bgzip") or not shutil.which("samtools"):

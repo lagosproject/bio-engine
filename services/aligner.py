@@ -12,7 +12,6 @@ import tempfile
 
 from core.exceptions import AlignmentError, FileNotFoundError
 from data.models import HGVSConfig, TracyConfig
-from utilities.hgvs_utils import HGVSAnnotator
 from utilities.tracy_pipeline import TracyPipeline
 
 logger = logging.getLogger(__name__)
@@ -23,8 +22,7 @@ def run_alignment(
     config: TracyConfig | None = None, 
     hgvs_config: HGVSConfig | None = None, 
     alignment_id: str = "results", 
-    output_base_dir: str | None = None, 
-    annotator: HGVSAnnotator | None = None
+    output_base_dir: str | None = None
 ) -> str:
     """
     Performs local alignment of a patient sequence against a reference.
@@ -36,7 +34,6 @@ def run_alignment(
         hgvs_config (HGVSConfig | None): Optional HGVS annotation configuration.
         alignment_id (str): Identifier for the generated output folder.
         output_base_dir (str | None): Base directory for output. Uses a temp dir if None.
-        annotator (HGVSAnnotator | None): Instantiated HGVS annotator to use.
         
     Returns:
         str: Path to the generated JSON results parsed from Tracy.
@@ -60,7 +57,7 @@ def run_alignment(
     output_dir = os.path.join(temp_base, alignment_id)
 
     tracy = TracyPipeline(output_dir=output_dir)
-    json_paths = tracy.process_samples(reference_fasta, [patient_ab1], config=config, hgvs_config=hgvs_config, annotator=annotator)
+    json_paths = tracy.process_samples(reference_fasta, [patient_ab1], config=config, hgvs_config=hgvs_config)
 
     if not json_paths:
         raise AlignmentError("Alignment produced no output.")

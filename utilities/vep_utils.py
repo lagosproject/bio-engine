@@ -9,6 +9,8 @@ import httpx
 # Configure traceability and logging levels
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+from services.reference import get_lrg_mapping
+
 class VEPAnnotator:
     """
     Advanced genomic variant annotation engine interacting with Ensembl's REST API.
@@ -103,8 +105,14 @@ class VEPAnnotator:
                         # Extract direct genomic mapping
                         hgvsg_list = allele_info.get("hgvsg", [])
                         if hgvsg_list and isinstance(hgvsg_list, list) and len(hgvsg_list) > 0:
-                            # Prioritize the first provided genomic coordinate
-                            translation_map[original_input] = hgvsg_list[0]
+                            # Prioritize NC_ (Genomic Chromosome) coordinates if available, 
+                            # as VEP handles them more reliably for transcript discovery than LRG_
+                            selected_hgvsg = hgvsg_list[0]
+                            for h in hgvsg_list:
+                                if h.startswith("NC_"):
+                                    selected_hgvsg = h
+                                    break
+                            translation_map[original_input] = selected_hgvsg
                         else:
                             # Fallback: retain original string if mapping fails
                             translation_map[original_input] = original_input
@@ -131,11 +139,24 @@ class VEPAnnotator:
             return []
 
         # Triage Phase: Binary classification based on ontological prefix
+        # and Resolve NG_ to LRG_ for better Ensembl compatibility
         variants_to_recode = []
         clean_variants = []
+        id_map = {} # used -> original
 
         for variant in hgvs_variants:
-            if self.refseq_pattern.match(variant):
+            ac_match = variant.split(':')[0] if ':' in variant else variant
+            
+            # Special handling for NG_ accessions which Ensembl rejects
+            if ac_match.startswith("NG_"):
+                lrg = get_lrg_mapping(ac_match)
+                if lrg:
+                    new_v = variant.replace(ac_match, lrg)
+                    id_map[new_v] = variant
+                    variants_to_recode.append(new_v)
+                else:
+                    variants_to_recode.append(variant)
+            elif self.refseq_pattern.match(variant):
                 variants_to_recode.append(variant)
             else:
                 clean_variants.append(variant)
@@ -192,14 +213,21 @@ class VEPAnnotator:
         # Topological Reconstruction:
         # VEP operated natively on genomic coordinates (NC_); However, users requested annotations 
         # using RefSeq identifiers (NP_ or NM_). Overwrite result labels to maintain transparent logic end-to-end.
-        inverse_recoded_map = {v: k for k, v in recoded_map.items()}
+        
+        # We need to compose the full map including the NG->LRG swap
+        # full_reverse_map: recoded_variant -> original_request_variant
+        full_reverse_map = {}
+        for used_v, hgvsg in recoded_map.items():
+            original_v = id_map.get(used_v, used_v)
+            full_reverse_map[hgvsg] = original_v
 
         for record in results:
             input_variant = record.get("input")
-            if input_variant in inverse_recoded_map:
-                # Restore the user requested nomenclature
-                record["original_input"] = inverse_recoded_map[input_variant]
+            if input_variant in full_reverse_map:
+                # Restore the user requested nomenclature (including NG_ fallback)
+                record["original_input"] = full_reverse_map[input_variant]
             else:
+                # Fallback for clean variants that might have been input directly
                 record["original_input"] = input_variant
 
         return results

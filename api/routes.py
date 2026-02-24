@@ -263,32 +263,27 @@ def hgvs_alternatives(request: HGVSRequest):
     Returns full HGVS alternatives for a specific variant.
     """
     try:
-        from utilities.hgvs_utils import HGVSAnnotator
-        from utilities.tracy_pipeline import TracyPipeline
-
-        # We need a dataframe provider.
-        # TracyPipeline has _get_hgvs_dataprovider but it's an instance method.
-        # Let's instantiate a temporary pipeline or just use the logic directly.
-        # Using pipeline instance is cleaner as it manages the HDP connection.
-        pipeline = TracyPipeline()
-        hdp = pipeline._get_hgvs_dataprovider()
-
-        if not hdp:
-            raise BioEngineError("Could not connect to HGVS data provider")
-
-        annotator = HGVSAnnotator(hdp, assembly=request.assembly)
-
-        # Determine ref_type based on transcript
-        ref_type = annotator.get_hgvs_type(request.transcript)
-
-        equivalents = annotator.find_equivalents(
-            ac=request.transcript,
-            ref_type=ref_type,
-            pos=request.pos,
-            ref=request.ref,
-            alt=request.alt
+        from utilities.ensembl_hgvs import EnsemblHGVS
+        
+        ensembl = EnsemblHGVS(assembly=request.assembly)
+        
+        # Determine HGVS type (c, g, or n)
+        if request.transcript.startswith(('NM_', 'XM_')): h_type = 'c'
+        elif request.transcript.startswith(('NC_', 'NG_', 'NW_', 'NT_')): h_type = 'g'
+        else: h_type = 'n'
+        
+        # Generate primary ID
+        primary = EnsemblHGVS.format_hgvs(
+            request.transcript, 
+            h_type, 
+            request.pos, 
+            request.ref, 
+            request.alt
         )
-        return equivalents
+        
+        # Batch lookup (even for one) is faster and more consistent now
+        results_map = ensembl.get_equivalents_batch([primary])
+        return results_map.get(primary, [primary])
 
     except Exception as e:
         logger.error(f"HGVS alternatives fetch failed: {e}")

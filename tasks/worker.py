@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Initialize managers
 job_manager = JobManager()
 
-def _process_single_read(patient_id: str, read_entry: Any, job: Job, ref_path: str, job_output_base: str, annotator: Any = None) -> dict[str, Any]:
+def _process_single_read(patient_id: str, read_entry: Any, job: Job, ref_path: str, job_output_base: str) -> dict[str, Any]:
     """
     Submits a single sample read to the alignment service in an isolated context.
     
@@ -34,9 +34,6 @@ def _process_single_read(patient_id: str, read_entry: Any, job: Job, ref_path: s
         job (Job): The contextual job.
         ref_path (str): The path to the resolved reference file.
         job_output_base (str): Temporary folder path to store Tracy alignments.
-        annotator (Any): Active HGVSAnnotator instance for sequence variant metadata.
-        
-    Returns:
         dict[str, Any]: A serialized JSON block representing the aligned sequence trace.
     """
     # read_entry is a dict (from JobRead) or string (legacy)
@@ -64,8 +61,7 @@ def _process_single_read(patient_id: str, read_entry: Any, job: Job, ref_path: s
             config=current_config,
             hgvs_config=job.hgvs_config,
             alignment_id=f"{patient_id}_{os.path.basename(read_path)}",
-            output_base_dir=job_output_base,
-            annotator=annotator
+            output_base_dir=job_output_base
         )
 
         with open(alignment_json_path, "rb") as f:
@@ -147,35 +143,6 @@ def process_job_background(job_id: str):
         # Prepare tasks for parallel execution
         max_workers = min(32, (os.cpu_count() or 1) + 4)
 
-        # Initialize HGVS Annotator once
-        # Initialize HGVS Annotator once
-        annotator = None
-        if job.hgvs_config and job.hgvs_config.transcript:
-            job_manager.update_job_progress(job_id, 16, "Connecting to HGVS database (UTA)...")
-            try:
-                import socket
-
-                from utilities.hgvs_utils import HGVSAnnotator, get_uta_connection
-
-                # Attempt connection with timeout
-                socket.setdefaulttimeout(10) # 10 seconds timeout
-                try:
-                    logger.info("Getting shared connection to HGVS UTA...")
-                    # use singleton
-                    hdp = get_uta_connection()
-                    logger.info("HGVS UTA connected.")
-                    assembly = job.hgvs_config.assembly if job.hgvs_config.assembly else "GRCh38"
-                    # Pass hdp to annotator
-                    annotator = HGVSAnnotator(hdp, assembly=assembly)
-                    logger.info("Shared HGVS Annotator initialized successfully")
-                finally:
-                    socket.setdefaulttimeout(None) # Reset timeout
-
-            except Exception as e:
-                logger.warning(f"Failed to initialize shared HGVS annotator (network issue?): {e}")
-                job_manager.update_job_progress(job_id, 16, "HGVS connection failed. Proceeding without annotation...")
-                # Proceed with annotator = None
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_read = {}
 
@@ -186,12 +153,11 @@ def process_job_background(job_id: str):
                 for read_entry in reads:
                     future = executor.submit(
                         _process_single_read,
-                        patient_id,
+                        str(patient_id),
                         read_entry,
                         job,
                         ref_path,
-                        job_output_base,
-                        annotator
+                        job_output_base
                     )
                     future_to_read[future] = (patient_id, read_entry)
 
@@ -220,31 +186,46 @@ def process_job_background(job_id: str):
                 progress_percent = 15 + int((completed_reads / total_reads) * 65)
                 job_manager.update_job_progress(job_id, progress_percent, f"Processed {completed_reads}/{total_reads} reads...")
 
-        # Aggregate HGVS alternatives from all results
+        # 1. Collect all unique primary HGVS variants found by Tracy
         all_alternatives = {}
+        unique_hgvs = set()
         for res in results:
-            # Check deep inside alignment result for hgvs_alternatives
-            # Structure: res -> alignment -> hgvs_alternatives
-            if "alignment" in res and isinstance(res["alignment"], dict):
-                alts = res["alignment"].pop("hgvs_alternatives", None)
-                if alts:
-                    all_alternatives.update(alts)
+            variants = res.get("alignment", {}).get("variants", {})
+            rows = variants.get("rows", [])
+            header = variants.get("columns", [])
+            if "hgvs" in header:
+                h_idx = header.index("hgvs")
+                for row in rows:
+                    if len(row) > h_idx and row[h_idx]:
+                        unique_hgvs.add(row[h_idx])
 
-        # Bulk update alternatives to job
-        if all_alternatives:
-            job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+        # 2. Batch annotate equivalents using EnsemblHGVS
+        if unique_hgvs and job.hgvs_config and job.hgvs_config.transcript:
+            job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(unique_hgvs)} variants via Ensembl...")
+            try:
+                from utilities.ensembl_hgvs import EnsemblHGVS
+                ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
+                all_alternatives = ensembl.get_equivalents_batch(list(unique_hgvs))
+                
+                # Bulk update alternatives to job
+                if all_alternatives:
+                    job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+            except Exception as e:
+                logger.error(f"Batch HGVS annotation failed: {e}")
 
         # Update results in job manager before VEP processing to ensure we have the latest HGVS
         job_manager.update_job_results(job_id, results)
 
         # Global VEP Annotation (if enabled)
-        if job.config and job.config.vep and job.hgvs_config and job.hgvs_config.auto_vep:
+        if job.hgvs_config and job.hgvs_config.auto_vep:
             job_manager.update_job_progress(job_id, 80, "Annotating variants with VEP (this may take a while)...")
             try:
                 from utilities.vep_utils import VEPAnnotator
                 vep_annotator = VEPAnnotator(assembly=job.hgvs_config.assembly or "GRCh38")
 
-                # 1. Collect all unique HGVS from results
+                # 1. Collect all unique HGVS strings found in the results table
+                # We use these directly because VEPAnnotator now handles internal mapping (NG_ -> LRG_ -> NC_) 
+                # and ensures the result is keyed by the original input.
                 all_hgvs = set()
                 for res in results:
                     variants = res.get("alignment", {}).get("variants", {})
@@ -254,53 +235,21 @@ def process_job_background(job_id: str):
                         h_idx = header.index("hgvs")
                         for row in rows:
                             if len(row) > h_idx and row[h_idx]:
-                                hgvs_val = row[h_idx]
-                                best_hgvs = hgvs_val
-                                if hgvs_val in all_alternatives:
-                                    equivalents = all_alternatives[hgvs_val]
-                                    # For VEP, NC_ (genomic chromosome) is the most reliable input.
-                                    # If not available, we fall back to NM_ or the original.
-                                    nc_alt = next((alt for alt in equivalents if alt.startswith("NC_")), None)
-                                    if nc_alt:
-                                        best_hgvs = nc_alt
-                                    elif not best_hgvs.startswith("NM_"):
-                                        nm_alt = next((alt for alt in equivalents if alt.startswith("NM_")), None)
-                                        if nm_alt:
-                                            best_hgvs = nm_alt
-                                all_hgvs.add(best_hgvs)
+                                all_hgvs.add(row[h_idx])
 
                 # 2. Filter out already cached annotations
                 existing_hgvs = set(job.vep_annotations.keys())
                 hgvs_to_annotate = list(all_hgvs - existing_hgvs)
 
                 if hgvs_to_annotate:
-                    # Filter out HGVS strings that VEP doesn't support (e.g. NG_ genomic refs)
-                    # VEP REST API primarily supports Transcript (NM, NR, XM, XR, ENST) or Chromosome (NC)
-                    valid_prefixes = ('NM_', 'NR_', 'XM_', 'XR_', 'NC_', 'ENST')
-                    valid_hgvs = [h for h in hgvs_to_annotate if h.startswith(valid_prefixes) or ':' not in h]
-                    # check for 1:g.123 (chromosome:g.)
-                    # Logic: if it starts with NG_ skip it.
-
-                    filtered_hgvs = []
-                    for h in hgvs_to_annotate:
-                         if h.startswith("NG_"):
-                             logger.warning(f"Skipping VEP annotation for {h}: NG_ accession not supported by Ensembl REST")
-                             continue
-                         filtered_hgvs.append(h)
-
-                    if filtered_hgvs:
-                         logger.info(f"Fetching VEP annotations for {len(filtered_hgvs)} variants...")
-                         job_manager.update_job_progress(job_id, 85, f"Annotating {len(filtered_hgvs)} variants via Ensembl API...")
-                         new_annotations = vep_annotator.get_annotations(filtered_hgvs)
-                         if new_annotations:
-                             job_manager.update_job_vep_annotations(job_id, new_annotations)
-                    else:
-                        logger.info("No valid HGVS strings for VEP (filtered all NG_ refs).")
-                        job_manager.update_job_progress(job_id, 90, "Skipped VEP (unsupported reference type).")
-
+                    logger.info(f"Fetching VEP annotations for {len(hgvs_to_annotate)} variants...")
+                    job_manager.update_job_progress(job_id, 85, f"Annotating {len(hgvs_to_annotate)} variants via Ensembl API...")
+                    new_annotations = vep_annotator.get_annotations(hgvs_to_annotate)
+                    if new_annotations:
+                        job_manager.update_job_vep_annotations(job_id, new_annotations)
                 else:
-                    logger.info("All variants already have VEP annotations (using cache).")
-                    job_manager.update_job_progress(job_id, 90, "Using cached VEP annotations.")
+                    logger.info("All variants already have VEP annotations or none found.")
+                    job_manager.update_job_progress(job_id, 90, "Finished VEP annotation step.")
 
             except Exception as e:
                 logger.error(f"Global VEP annotation failed for job {job_id}: {e}")
@@ -333,40 +282,34 @@ def annotate_hgvs_background(job_id: str):
             logger.error(f"Job {job_id} missing HGVS configuration")
             return
 
-        from utilities.hgvs_utils import HGVSAnnotator, get_uta_connection
+        from utilities.ensembl_hgvs import EnsemblHGVS
+        ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
 
-        # Connect to UTA
-        try:
-            hdp = get_uta_connection()
-        except Exception as e:
-            logger.error(f"Failed to connect to UTA: {e}")
-            job_manager.update_job_status(job_id, JobStatus.FAILED)
+        # 1. Collect all unique primary HGVS variants
+        unique_hgvs = set()
+        for res in job.results:
+            variants = res.get("alignment", {}).get("variants", {})
+            rows = variants.get("rows", [])
+            header = variants.get("columns", [])
+            if "hgvs" in header:
+                h_idx = header.index("hgvs")
+                for row in rows:
+                    if len(row) > h_idx and row[h_idx]:
+                        unique_hgvs.add(row[h_idx])
+
+        if not unique_hgvs:
+            job_manager.update_job_status(job_id, JobStatus.COMPLETED)
             return
 
-        assembly = job.hgvs_config.assembly if job.hgvs_config.assembly else "GRCh38"
-        annotator = HGVSAnnotator(hdp, assembly=assembly)
-
-        updated_results = []
-        for res in job.results:
-            # Re-process variants to add HGVS
-            # We need to reconstruct the data structure expected by add_hgvs_equivalents
-
-            new_res = res.copy()
-            alignment_data = new_res.get("alignment", {})
-
-            if alignment_data.get("variants"):
-                try:
-                    # Direct annotation
-                    annotator.annotate_data(alignment_data, job.hgvs_config, full=False)
-                except Exception as e:
-                    logger.warning(f"HGVS processing failed for one result in job {job_id}: {e}")
-
-            updated_results.append(new_res)
-
-        # Update job
-        job_manager.update_job_results(job_id, updated_results)
+        # 2. Batch annotate
+        all_alternatives = ensembl.get_equivalents_batch(list(unique_hgvs))
+        
+        # 3. Update job
+        if all_alternatives:
+            job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+            
         job_manager.update_job_status(job_id, JobStatus.COMPLETED)
-        logger.info(f"Job {job_id} HGVS annotation completed")
+        logger.info(f"Job {job_id} batch HGVS annotation completed")
 
     except Exception as e:
         job_manager.update_job_status(job_id, JobStatus.FAILED)

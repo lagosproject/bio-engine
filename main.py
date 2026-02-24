@@ -7,6 +7,7 @@ It initializes the FastAPI application, sets up logging, CORS, and
 global exception handlers, and configures Uvicorn for serving the API.
 """
 
+import argparse
 import logging
 import multiprocessing
 import os
@@ -79,6 +80,14 @@ def signal_handler(sig, frame):
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+
+    parser = argparse.ArgumentParser(description="Bio-Engine Sidecar")
+    parser.add_argument("--tracy-path", type=str, help="Path to the tracy binary")
+    args, unknown = parser.parse_known_args()
+
+    if args.tracy_path:
+        logger.info(f"Overriding tracy_path from CLI: {args.tracy_path}")
+        settings.tracy_path = args.tracy_path
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)

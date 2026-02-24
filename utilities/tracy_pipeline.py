@@ -4,7 +4,7 @@ Tracy Alignment Engine Wrapper
 
 This module wraps the `tracy` CLI tool for sequence alignment, mutation decomposition,
 and basecalling. It orchestrates the internal JSON output from `tracy` into structured
-application models and delegates to `HGVSAnnotator` for genomic notation integration.
+application models.
 """
 
 import logging
@@ -16,10 +16,10 @@ from typing import Any
 
 import orjson
 
+from core.config import settings
 from core.exceptions import AlignmentError
 from data.models import HGVSConfig, TracyConfig
 from services.reference import ensure_indexed
-from utilities.hgvs_utils import HGVSAnnotator, get_uta_connection
 from utilities.sequence_utils import get_complement, get_iupac_consensus, get_reverse_complement, two_iupac_consensus
 
 logger = logging.getLogger(__name__)
@@ -28,17 +28,8 @@ class TracyPipeline:
     def __init__(self, output_dir: str = "results"):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.hdp = None
 
-    def _get_hgvs_dataprovider(self):
-        if self.hdp is None:
-            try:
-                self.hdp = get_uta_connection()
-            except Exception as e:
-                logger.error(f"Failed to connect to UTA: {e}")
-        return self.hdp
-
-    def process_samples(self, reference_path: str, sanger_files: list[str], config: TracyConfig | None = None, hgvs_config: HGVSConfig | None = None, annotator: HGVSAnnotator | None = None) -> list[str]:
+    def process_samples(self, reference_path: str, sanger_files: list[str], config: TracyConfig | None = None, hgvs_config: HGVSConfig | None = None) -> list[str]:
         """Processes 1 or 2 Sanger sequences using Tracy."""
         config = config or TracyConfig()
 
@@ -53,16 +44,16 @@ class TracyPipeline:
             base_name = os.path.splitext(filename)[0]
             output_prefix = str(self.output_dir / base_name)
 
-            json_path = self._run_decompose_safe(reference_path, sanger_file, output_prefix, config, hgvs_config, annotator)
+            json_path = self._run_decompose_safe(reference_path, sanger_file, output_prefix, config, hgvs_config)
             if json_path:
                 json_paths.append(json_path)
 
         return json_paths
 
-    def _run_decompose_safe(self, ref: str, ab1: str, prefix: str, config: TracyConfig, hgvs_config: HGVSConfig | None = None, annotator: HGVSAnnotator | None = None) -> str | None:
+    def _run_decompose_safe(self, ref: str, ab1: str, prefix: str, config: TracyConfig, hgvs_config: HGVSConfig | None = None) -> str | None:
         """Attempts decomposition and handles large reference errors."""
         try:
-            return self._execute_decompose(ref, ab1, prefix, config, hgvs_config, annotator)
+            return self._execute_decompose(ref, ab1, prefix, config, hgvs_config)
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr.decode() if e.stderr else str(e)
 
@@ -71,7 +62,7 @@ class TracyPipeline:
                 try:
                     indexed_ref = ensure_indexed(ref)
                     logger.info(f"Reference indexed successfully: {indexed_ref}")
-                    return self._execute_decompose(indexed_ref, ab1, prefix, config, hgvs_config, annotator)
+                    return self._execute_decompose(indexed_ref, ab1, prefix, config, hgvs_config)
                 except Exception as index_err:
                     msg = f"Auto-indexing failed: {index_err}"
                     logger.error(msg)
@@ -80,9 +71,9 @@ class TracyPipeline:
                 logger.error(f"Tracy decompose failed: {error_msg}")
                 raise AlignmentError(f"Tracy decompose failed: {error_msg}")
 
-    def _execute_decompose(self, ref: str, ab1: str, prefix: str, config: TracyConfig, hgvs_config: HGVSConfig | None = None, annotator: HGVSAnnotator | None = None) -> str:
+    def _execute_decompose(self, ref: str, ab1: str, prefix: str, config: TracyConfig, hgvs_config: HGVSConfig | None = None) -> str:
         """Executes the tracy decompose command."""
-        tracy_bin = os.environ.get("TRACY_PATH", "tracy")
+        tracy_bin = settings.tracy_path
         cmd = [
             tracy_bin, "decompose",
             "-p", str(config.pratio), "-k", str(config.kmer),
@@ -126,7 +117,7 @@ class TracyPipeline:
                         if ref_ac.lower().endswith(ext2):
                             ref_ac = ref_ac[:-len(ext2)]
 
-            normalized_data = self._normalize_tracy_json(data, ref, ab1, hgvs_config, annotator, source_ac=ref_ac)
+            normalized_data = self._normalize_tracy_json(data, ref, ab1, hgvs_config, source_ac=ref_ac)
 
             with open(json_file, 'wb') as f:
                 f.write(orjson.dumps(normalized_data, option=orjson.OPT_INDENT_2))
@@ -134,7 +125,7 @@ class TracyPipeline:
             return json_file
         raise AlignmentError(f"Alignment succeeded but output JSON not found: {json_file}")
 
-    def _normalize_tracy_json(self, data: dict[str, Any], ref_path: str, ab1_path: str, hgvs_config: HGVSConfig | None = None, annotator: HGVSAnnotator | None = None, source_ac: str | None = None) -> dict[str, Any]:
+    def _normalize_tracy_json(self, data: dict[str, Any], ref_path: str, ab1_path: str, hgvs_config: HGVSConfig | None = None, source_ac: str | None = None) -> dict[str, Any]:
         """Normalizes and enhances Tracy JSON data."""
         new_data = data.copy()
 
@@ -146,16 +137,8 @@ class TracyPipeline:
         else:
             new_data["ms_analyzer"] = {"original_orientation": "forward"}
 
-        if hgvs_config and hgvs_config.transcript:
-            if not annotator:
-                hdp = self._get_hgvs_dataprovider()
-                if hdp:
-                     assembly = hgvs_config.assembly if hgvs_config.assembly else "GRCh38"
-                     annotator = HGVSAnnotator(hdp, assembly=assembly)
-
-            self.add_hgvs_equivalents(new_data, hgvs_config, annotator, source_ac=source_ac)
-
-        self._ensure_hgvs_column(new_data)
+        # ensure primary HGVS is populated for later batch annotation
+        self._ensure_hgvs_column(new_data, source_ac=source_ac)
 
         # Calculate readSeqRef
         try:
@@ -192,20 +175,48 @@ class TracyPipeline:
         # Normalize Basecalls and Variants
         self._normalize_basecalls_and_variants(new_data, original_data)
 
-    def _ensure_hgvs_column(self, data: dict[str, Any]):
-        """Ensures the HGVS column exists in variants table."""
+    def _ensure_hgvs_column(self, data: dict[str, Any], source_ac: str | None = None):
+        """Ensures the HGVS column exists in variants table and populates with primary ID."""
         if variants := data.get("variants"):
             rows = variants.get("rows", [])
             header = variants.get("columns", [])
-            if rows and "hgvs" not in header:
+            
+            # Identify indices
+            try:
+                pos_idx = header.index("pos")
+                ref_idx = header.index("ref")
+                alt_idx = header.index("alt")
+            except ValueError:
+                return # Missing essential columns
+
+            if "hgvs" not in header:
                 header.append("hgvs")
                 variants["columns"] = header
-                hgvs_idx = header.index("hgvs")
+            
+            hgvs_idx = header.index("hgvs")
+            
+            if source_ac:
+                from utilities.ensembl_hgvs import EnsemblHGVS
+                # Determine HGVS type (c, g, or n)
+                if source_ac.startswith(('NM_', 'XM_')): h_type = 'c'
+                elif source_ac.startswith(('NC_', 'NG_', 'NW_', 'NT_')): h_type = 'g'
+                else: h_type = 'n'
+                
+                for row in rows:
+                    if len(row) <= hgvs_idx or not row[hgvs_idx]:
+                        try:
+                            # Generate local primary HGVS
+                            primary = EnsemblHGVS.format_hgvs(source_ac, h_type, int(row[pos_idx]), row[ref_idx], row[alt_idx])
+                            if len(row) < len(header):
+                                row.append(primary)
+                            else:
+                                row[hgvs_idx] = primary
+                        except:
+                            if len(row) < len(header): row.append("")
+            else:
                 for row in rows:
                     if len(row) < len(header):
                         row.append("")
-                    else:
-                        row[hgvs_idx] = ""
 
     def getReadSeqConsensus(self, data: dict[str, Any]) -> list[str]:
         primarySeq = data.get("primarySeq", "")
@@ -306,24 +317,6 @@ class TracyPipeline:
 
         return align_positioning
 
-    def add_hgvs_equivalents(self, data: dict[str, Any], hgvs_config: HGVSConfig, annotator: HGVSAnnotator | None = None, source_ac: str | None = None):
-        """Adds HGVS equivalents to variants using HGVSAnnotator."""
-        try:
-            if annotator:
-                annotator.annotate_data(data, hgvs_config, full=False, source_ac=source_ac)
-                return
-
-            hdp = self._get_hgvs_dataprovider()
-            if not hdp:
-                return
-
-            assembly = hgvs_config.assembly if hgvs_config.assembly else "GRCh38"
-            annotator = HGVSAnnotator(hdp, assembly=assembly)
-            annotator.annotate_data(data, hgvs_config, full=False, source_ac=source_ac)
-
-        except Exception as e:
-            logger.error(f"HGVS processing failed: {e}")
-
 
     def _normalize_peaks(self, new_data: dict[str, Any], data: dict[str, Any]):
         peakA, peakC, peakG, peakT = data.get("peakA", []), data.get("peakC", []), data.get("peakG", []), data.get("peakT", [])
@@ -386,7 +379,7 @@ class TracyPipeline:
             output_prefix = os.path.join(temp_dir, os.path.splitext(base_name)[0])
             json_file = f"{output_prefix}.json"
 
-            tracy_bin = os.environ.get("TRACY_PATH", "tracy")
+            tracy_bin = settings.tracy_path
             cmd = [tracy_bin, "basecall", ab1_path, "-f", "json", "-o", json_file]
 
             try:
@@ -428,7 +421,7 @@ class TracyPipeline:
             json_file = f"{output_prefix}.json"
 
             # Run tracy align
-            tracy_bin = os.environ.get("TRACY_PATH", "tracy")
+            tracy_bin = settings.tracy_path
             cmd = [tracy_bin, "align", "-r", reference_path, ab1_path, "-o", output_prefix]
 
             try:

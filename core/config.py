@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     jobs_dir: str = _persistence.get_jobs_dir()
     logs_dir: str = _persistence.get_logs_dir()
 
+    # Tracy
+    tracy_path: str = os.getenv("TRACY_PATH", "tracy")
+
     # Logging
     log_level: str = "INFO"
     json_logs: bool = True
