@@ -34,6 +34,33 @@ def check_ncbi_reference_exists(accession: str) -> bool:
         logger.error(f"NCBI existence check failed for {accession}: {e}")
         return False
 
+def search_reference(query: str, retmax: int = 20) -> list[dict]:
+    """Searches NCBI Nucleotide for references matching the query (NCBI code or Gene Name)."""
+    try:
+        term = query
+        # If it doesn't look like an accession code, assume gene search
+        if not any(query.upper().startswith(prefix) for prefix in ["NM_", "NC_", "NG_", "NR_", "XM_", "XR_"]):
+            term = f"{query} AND human[Organism] AND refseq[Filter]"
+
+        with Entrez.esearch(db="nucleotide", term=term, retmax=retmax) as handle:
+            record = Entrez.read(handle)
+            id_list = record.get("IdList", [])
+            
+        results = []
+        if id_list:
+            with Entrez.esummary(db="nucleotide", id=",".join(id_list)) as sum_handle:
+                summaries = Entrez.read(sum_handle)
+                for s in summaries:
+                    results.append({
+                        "accession": s.get("Caption", ""),
+                        "title": s.get("Title", ""),
+                        "length": s.get("Length", 0)
+                    })
+        return results
+    except Exception as e:
+        logger.error(f"Failed to search NCBI reference for {query}: {e}")
+        return []
+
 def load_reference(ref_input: str) -> str:
     """Handles both local files and NCBI IDs, returning a valid FASTA path."""
     if os.path.exists(ref_input):

@@ -90,6 +90,14 @@ def check_reference(id: str):
     exists = ref_service.check_ncbi_reference_exists(id)
     return {"exists": exists}
 
+@router.get("/search-reference")
+def search_reference(query: str):
+    """
+    Searches NCBI nucleotide database for a given query (gene name or accession).
+    """
+    results = ref_service.search_reference(query)
+    return {"results": results}
+
 @router.get("/preview-read")
 def preview_read(path: str):
     """Returns trace data for a given file path."""
