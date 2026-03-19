@@ -1,7 +1,12 @@
+import json
 import logging
 import re
+import subprocess
+import tempfile
 import time
+from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,255 +16,23 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 from services.reference import get_lrg_mapping
 
-class VEPAnnotator:
+class BaseVEPAnnotator(ABC):
     """
-    Advanced genomic variant annotation engine interacting with Ensembl's REST API.
-    Implements a dual pipeline that automatically detects RefSeq nomenclatures 
-    (NM_, NP_, NC_, NG_) and standardizes them using the Variant Recoder middleware
-    before executing VEP consequence predictions.
+    Abstract base class for VEP annotation engines.
     """
-
-    def __init__(self, assembly: str = "GRCh38", timeout: float = 30.0):
-        """
-        Initializes the network client and routes traffic to the appropriate cluster based on the assembly.
-        """
+    def __init__(self, assembly: str = "GRCh38"):
         self.assembly = assembly.upper()
-        # DNS switching to support retrospective clinical genomic data on GRCh37
-        if self.assembly == "GRCh37":
-            self.base_url = "https://grch37.rest.ensembl.org"
-        else:
-            self.base_url = "https://rest.ensembl.org"
 
-        self.client = httpx.Client(timeout=timeout)
-        self.headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-        # Optimized lexical pattern for intercepting RefSeq prefixes
-        self.refseq_pattern = re.compile(r'^(NM_|NP_|NC_|NG_)', re.IGNORECASE)
-
-    def __del__(self):
+    @abstractmethod
+    def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
         """
-        Class destructor ensuring graceful closure of underlying HTTP sockets to prevent 
-        memory leaks and port exhaustion during massive operations.
+        Retrieves annotations for a list of HGVS variants.
         """
-        try:
-            self.client.close()
-        except Exception:
-            pass
-
-    def _handle_rate_limit(self, response: httpx.Response) -> bool:
-        """
-        Self-protection mechanism against network throttling (Rate Limiting).
-        Analyzes HTTP 429 codes and obeys the 'Retry-After' header dictated by EMBL-EBI.
-        """
-        if response.status_code == 429:
-            retry_after = int(response.headers.get("Retry-After", 1))
-            logging.warning(f"Restricción de tráfico detectada (HTTP 429). Suspendiendo ejecución por {retry_after} segundos...")
-            time.sleep(retry_after)
-            return True
-        return False
-
-    def recode_variants_batch(self, variants: list[str]) -> dict[str, str]:
-        """
-        The Translator Middleware. Receives protein (p.) or RefSeq transcript HGVS strings 
-        and requests Ensembl to recode them to absolute genomic coordinates (HGVSg).
-        """
-        if not variants:
-            return {}
-
-        # Use the Variant Recoder bulk (POST) endpoint for humans
-        endpoint = f"{self.base_url}/variant_recoder/human"
-
-        # Limit the response to extract only the stable genomic coordinate
-        payload = {
-            "ids": variants,
-            "fields": "hgvsg,id"
-        }
-
-        translation_map = {}
-        retries = 3
-
-        for attempt in range(retries):
-            try:
-                response = self.client.post(endpoint, json=payload, headers=self.headers)
-
-                if self._handle_rate_limit(response):
-                    continue
-
-                response.raise_for_status()
-                data = response.json()
-
-                # Iterate over the resulting JSON array of decoded variants
-                for item in data:
-                    # Ensembl returns a dictionary per ID, indexed by the alternate allele
-                    for allele_info in item.values():
-                        if not isinstance(allele_info, dict):
-                            continue
-
-                        original_input = allele_info.get("input")
-                        if not original_input:
-                            continue
-
-                        # Extract direct genomic mapping
-                        hgvsg_list = allele_info.get("hgvsg", [])
-                        if hgvsg_list and isinstance(hgvsg_list, list) and len(hgvsg_list) > 0:
-                            # Prioritize NC_ (Genomic Chromosome) coordinates if available, 
-                            # as VEP handles them more reliably for transcript discovery than LRG_
-                            selected_hgvsg = hgvsg_list[0]
-                            for h in hgvsg_list:
-                                if h.startswith("NC_"):
-                                    selected_hgvsg = h
-                                    break
-                            translation_map[original_input] = selected_hgvsg
-                        else:
-                            # Fallback: retain original string if mapping fails
-                            translation_map[original_input] = original_input
-
-                        # Move to next item after processing current definition
-                        break
-                break
-
-            except httpx.HTTPError as e:
-                logging.error(f"Network failure during genomic recoding (Attempt {attempt + 1}): {e}")
-                if attempt == retries - 1:
-                    logging.warning("Retry limit exceeded. Injecting original strings to predictor.")
-                    translation_map = {v: v for v in variants}
-                time.sleep(2)
-
-        return translation_map
-
-    def annotate_hgvs_batch(self, hgvs_variants: list[str]) -> list[dict[str, Any]]:
-        """
-        Main orchestrator of the VEP pipeline. Triage, recoding, dispatch to the master predictor, 
-        and assembly of the complex payload with implicit support for RefSeq models.
-        """
-        if not hgvs_variants:
-            return []
-
-        # Triage Phase: Binary classification based on ontological prefix
-        # and Resolve NG_ to LRG_ for better Ensembl compatibility
-        variants_to_recode = []
-        clean_variants = []
-        id_map = {} # used -> original
-
-        for variant in hgvs_variants:
-            ac_match = variant.split(':')[0] if ':' in variant else variant
-            
-            # Special handling for NG_ accessions which Ensembl rejects
-            if ac_match.startswith("NG_"):
-                lrg = get_lrg_mapping(ac_match)
-                if lrg:
-                    new_v = variant.replace(ac_match, lrg)
-                    id_map[new_v] = variant
-                    variants_to_recode.append(new_v)
-                else:
-                    variants_to_recode.append(variant)
-            elif self.refseq_pattern.match(variant):
-                variants_to_recode.append(variant)
-            else:
-                clean_variants.append(variant)
-
-        # Recoding Phase: Middleware invocation
-        recoded_map = {}
-        if variants_to_recode:
-            logging.info(f"Routing {len(variants_to_recode)} ambiguous/RefSeq sequences via Variant Recoder...")
-            recoded_map = self.recode_variants_batch(variants_to_recode)
-
-        # Synthesize universal operational block for the VEP engine
-        final_vep_payload = clean_variants + list(recoded_map.values())
-        final_vep_payload = list(set(final_vep_payload))  # Deduplicate for network efficiency
-
-        endpoint = f"{self.base_url}/vep/human/hgvs"
-
-        # Advanced Configuration Payload
-        payload = {
-            "hgvs_notations": final_vep_payload,
-            "ignore_invalid": 1,      # Algorithmic firewall against full batch corruption
-            "refseq": 1,              # Required direct resolution for RefSeq alignments
-            "mane": 1,                # Aggressive filtering towards high-confidence canonical transcripts
-            "sift": "b",              # Activate predictive SIFT plugin (score + class)
-            "polyphen": "b",          # Activate structural PolyPhen-2 plugin (score + class)
-            "symbol": 1,              # Expose taxonomic gene name
-            "transcript_version": 1   # Strict sequence patch linkage
-        }
-
-        results = []
-        retries = 3
-
-        for attempt in range(retries):
-            try:
-                response = self.client.post(endpoint, json=payload, headers=self.headers)
-
-                if self._handle_rate_limit(response):
-                    continue
-
-                # Structural degradation fallback: Convert batch to serial requests if highly complex payload crashes (HTTP 400).
-                if response.status_code == 400 and len(final_vep_payload) > 1:
-                    logging.warning("Batch collapsed in VEP (HTTP 400). Degrading to serialized individual pipeline...")
-                    return self._fallback_individual_requests(final_vep_payload, payload)
-
-                response.raise_for_status()
-                results = response.json()
-                break
-
-            except httpx.HTTPError as e:
-                logging.error(f"Direct connection failure with VEP Engine (Attempt {attempt + 1}): {e}")
-                if attempt == retries - 1:
-                    return []
-                time.sleep(2)
-
-        # Topological Reconstruction:
-        # VEP operated natively on genomic coordinates (NC_); However, users requested annotations 
-        # using RefSeq identifiers (NP_ or NM_). Overwrite result labels to maintain transparent logic end-to-end.
-        
-        # We need to compose the full map including the NG->LRG swap
-        # full_reverse_map: recoded_variant -> original_request_variant
-        full_reverse_map = {}
-        for used_v, hgvsg in recoded_map.items():
-            original_v = id_map.get(used_v, used_v)
-            full_reverse_map[hgvsg] = original_v
-
-        for record in results:
-            input_variant = record.get("input")
-            if input_variant in full_reverse_map:
-                # Restore the user requested nomenclature (including NG_ fallback)
-                record["original_input"] = full_reverse_map[input_variant]
-            else:
-                # Fallback for clean variants that might have been input directly
-                record["original_input"] = input_variant
-
-        return results
-
-    def _fallback_individual_requests(self, variants: list[str], base_payload: dict) -> list[dict[str, Any]]:
-        """
-        Data survival strategy. Decomposes a massive failed batch into atomic operations 
-        to isolate the pathological variant and save the rest of the dataset.
-        """
-        endpoint = f"{self.base_url}/vep/human/hgvs"
-        results = []
-
-        for variant in variants:
-            payload = base_payload.copy()
-            payload["hgvs_notations"] = [variant]
-            try:
-                response = self.client.post(endpoint, json=payload, headers=self.headers)
-                if self._handle_rate_limit(response):
-                    response = self.client.post(endpoint, json=payload, headers=self.headers)
-
-                if response.status_code == 200:
-                    results.extend(response.json())
-            except Exception as e:
-                logging.debug(f"Irresolvable variant isolated ({variant}): {e}")
-                continue
-
-        return results
+        pass
 
     def _rank_impact(self, impact: str) -> int:
         """
         Hierarchical heuristic classifier to prioritize transcriptional damage.
-        Quantifies the clinical severity of the variant based on VEP ontological consequences.
         """
         ranking = {
             "HIGH": 4,       # Truncations, stop codon loss, severe splicing alteration
@@ -269,14 +42,11 @@ class VEPAnnotator:
         }
         return ranking.get(impact.upper(), 0)
 
-    def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
+    def _structure_results(self, raw_results: list[dict[str, Any]]) -> dict[str, Any]:
         """
-        Final semantic processor. Ingests the raw list of variants, invokes the prediction cascade, 
-        evaluates the multiplicity of affected transcripts, and distills the result into the most 
-        critical and representative biological consequence for each original input.
+        Common logic to structure raw VEP results into the application format.
         """
-        raw_results = self.annotate_hgvs_batch(hgvs_variants)
-        structured_annotations = {}
+        structured_annotations: dict[str, Any] = {}
 
         for record in raw_results:
             # Unbreakable link via user's original identifier
@@ -343,22 +113,290 @@ class VEPAnnotator:
                         clin_sigs.add(sig.replace("_", " "))
 
                 if "phenotype_or_disease" in cv and cv["phenotype_or_disease"] == 1:
-                    # Depending on VEP config, specific disease names might be in `phenotype` or `var_synonyms`
-                    # but typically if phenotype_or_disease is 1, it's structurally relevant.
-                    if "id" in cv and not cv["id"].startswith("COS"):  # Filter out generic COSMIC structural IDs
+                    if "id" in cv and not cv["id"].startswith("COS"):
                         phenotypes.append(cv["id"])
                     
-                    # Some variants hold 'pubmed' arrays which are highly relevant for clinical
                     if "pubmed" in cv:
                          for pmid in cv["pubmed"]:
-                             # Avoid massive arrays
-                             if len(phenotypes) < 5:
-                                 phenotypes.append(f"PMID:{pmid}")
+                              if len(phenotypes) < 5:
+                                  phenotypes.append(f"PMID:{pmid}")
 
             annotation["clin_sig"] = sorted(list(clin_sigs))
-            # Deduplicate and cap phenotypes to prevent UI bloat
             annotation["phenotype"] = sorted(list(set(phenotypes)))[:10]
+
+            if not identifier or not isinstance(identifier, str):
+                continue
 
             structured_annotations[identifier] = annotation
 
         return structured_annotations
+
+class OnlineVEPAnnotator(BaseVEPAnnotator):
+    """
+    Advanced genomic variant annotation engine interacting with Ensembl's REST API.
+    """
+    def __init__(self, assembly: str = "GRCh38", timeout: float = 30.0):
+        super().__init__(assembly)
+        if self.assembly == "GRCh37":
+            self.base_url = "https://grch37.rest.ensembl.org"
+        else:
+            self.base_url = "https://rest.ensembl.org"
+
+        self.client = httpx.Client(timeout=timeout)
+        self.headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        self.refseq_pattern = re.compile(r'^(NM_|NP_|NC_|NG_)', re.IGNORECASE)
+
+    def __del__(self):
+        try:
+            self.client.close()
+        except Exception:
+            pass
+
+    def _handle_rate_limit(self, response: httpx.Response) -> bool:
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("Retry-After", 1))
+            logging.warning(f"Restricción de tráfico detectada (HTTP 429). Suspendiendo ejecución por {retry_after} segundos...")
+            time.sleep(retry_after)
+            return True
+        return False
+
+    def recode_variants_batch(self, variants: list[str]) -> dict[str, str]:
+        if not variants:
+            return {}
+        endpoint = f"{self.base_url}/variant_recoder/human"
+        payload = {"ids": variants, "fields": "hgvsg,id"}
+        translation_map = {}
+        retries = 3
+
+        for attempt in range(retries):
+            try:
+                response = self.client.post(endpoint, json=payload, headers=self.headers)
+                if self._handle_rate_limit(response): continue
+                response.raise_for_status()
+                data = response.json()
+                for item in data:
+                    for allele_info in item.values():
+                        if not isinstance(allele_info, dict): continue
+                        original_input = allele_info.get("input")
+                        if not original_input: continue
+                        hgvsg_list = allele_info.get("hgvsg", [])
+                        if hgvsg_list and isinstance(hgvsg_list, list) and len(hgvsg_list) > 0:
+                            selected_hgvsg = hgvsg_list[0]
+                            for h in hgvsg_list:
+                                if h.startswith("NC_"):
+                                    selected_hgvsg = h
+                                    break
+                            translation_map[original_input] = selected_hgvsg
+                        else:
+                            translation_map[original_input] = original_input
+                        break
+                break
+            except httpx.HTTPError as e:
+                logging.error(f"Network failure during genomic recoding (Attempt {attempt + 1}): {e}")
+                if attempt == retries - 1:
+                    translation_map = {v: v for v in variants}
+                time.sleep(2)
+        return translation_map
+
+    def annotate_hgvs_batch(self, hgvs_variants: list[str]) -> list[dict[str, Any]]:
+        if not hgvs_variants: return []
+        variants_to_recode = []
+        clean_variants = []
+        id_map = {}
+        for variant in hgvs_variants:
+            ac_match = variant.split(':')[0] if ':' in variant else variant
+            if ac_match.startswith("NG_"):
+                lrg = get_lrg_mapping(ac_match)
+                if lrg:
+                    new_v = variant.replace(ac_match, lrg)
+                    id_map[new_v] = variant
+                    variants_to_recode.append(new_v)
+                else:
+                    variants_to_recode.append(variant)
+            elif self.refseq_pattern.match(variant):
+                variants_to_recode.append(variant)
+            else:
+                clean_variants.append(variant)
+
+        recoded_map = {}
+        if variants_to_recode:
+            logging.info(f"Routing {len(variants_to_recode)} ambiguous/RefSeq sequences via Variant Recoder...")
+            recoded_map = self.recode_variants_batch(variants_to_recode)
+
+        final_vep_payload = list(set(clean_variants + list(recoded_map.values())))
+        endpoint = f"{self.base_url}/vep/human/hgvs"
+        payload = {
+            "hgvs_notations": final_vep_payload,
+            "ignore_invalid": 1, "refseq": 1, "mane": 1, "sift": "b", "polyphen": "b", "symbol": 1, "transcript_version": 1
+        }
+        results = []
+        retries = 3
+        for attempt in range(retries):
+            try:
+                response = self.client.post(endpoint, json=payload, headers=self.headers)
+                if self._handle_rate_limit(response): continue
+                if response.status_code == 400 and len(final_vep_payload) > 1:
+                    return self._fallback_individual_requests(final_vep_payload, payload)
+                response.raise_for_status()
+                results = response.json()
+                break
+            except httpx.HTTPError as e:
+                logging.error(f"Direct connection failure with VEP Engine (Attempt {attempt + 1}): {e}")
+                if attempt == retries - 1: return []
+                time.sleep(2)
+
+        full_reverse_map = {}
+        for used_v, hgvsg in recoded_map.items():
+            original_v = id_map.get(used_v, used_v)
+            full_reverse_map[hgvsg] = original_v
+
+        for record in results:
+            input_variant = record.get("input")
+            record["original_input"] = full_reverse_map.get(input_variant, input_variant)
+        return results
+
+    def _fallback_individual_requests(self, variants: list[str], base_payload: dict) -> list[dict[str, Any]]:
+        endpoint = f"{self.base_url}/vep/human/hgvs"
+        results = []
+        for variant in variants:
+            payload = base_payload.copy()
+            payload["hgvs_notations"] = [variant]
+            try:
+                response = self.client.post(endpoint, json=payload, headers=self.headers)
+                if self._handle_rate_limit(response):
+                    response = self.client.post(endpoint, json=payload, headers=self.headers)
+                if response.status_code == 200:
+                    results.extend(response.json())
+            except Exception as e:
+                logging.debug(f"Irresolvable variant isolated ({variant}): {e}")
+                continue
+        return results
+
+    def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
+        raw_results = self.annotate_hgvs_batch(hgvs_variants)
+        return self._structure_results(raw_results)
+
+class LocalVEPAnnotator(BaseVEPAnnotator):
+    """
+    Annotator that uses a local VEP installation.
+    """
+    def __init__(self, assembly: str = "GRCh38", vep_path: str = "vep", vep_data: str | None = None):
+        super().__init__(assembly)
+        self.vep_path = vep_path
+        self.vep_data = vep_data
+
+    def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
+        if not hgvs_variants: return {}
+
+        results = []
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp_input:
+            for variant in hgvs_variants:
+                tmp_input.write(f"{variant}\n")
+            tmp_input_path = tmp_input.name
+
+        try:
+            cmd = [
+                self.vep_path,
+                "--input_file", tmp_input_path,
+                "--format", "hgvs",
+                "--output_file", "STDOUT",
+                "--json",
+                "--database",
+                "--assembly", self.assembly,
+                "--everything"
+            ]
+            if self.vep_data:
+                cmd.extend(["--dir", self.vep_data])
+            
+            logging.info(f"Running local VEP: {' '.join(cmd)}")
+            process = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            
+            for line in process.stdout.splitlines():
+                if line.strip():
+                    try:
+                        results.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Local VEP failed: {e.stderr}")
+        finally:
+            Path(tmp_input_path).unlink(missing_ok=True)
+
+        return self._structure_results(results)
+
+class DockerVEPAnnotator(BaseVEPAnnotator):
+    """
+    Annotator that uses VEP via Docker.
+    """
+    def __init__(self, assembly: str = "GRCh38", image: str = "ensemblorg/ensembl-vep", vep_data: str | None = None):
+        super().__init__(assembly)
+        self.image = image
+        self.vep_data = vep_data
+
+    def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
+        if not hgvs_variants: return {}
+
+        results = []
+        # Create a temporary directory to share with Docker
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_dir_path = Path(tmp_dir)
+            input_file = tmp_dir_path / "input.txt"
+            with open(input_file, 'w') as f:
+                for variant in hgvs_variants:
+                    f.write(f"{variant}\n")
+
+            cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{tmp_dir}:/tmp/vep",
+            ]
+            
+            vep_cmd = [
+                "vep",
+                "--input_file", "/tmp/vep/input.txt",
+                "--format", "hgvs",
+                "--output_file", "STDOUT",
+                "--json",
+                "--assembly", self.assembly,
+                "--everything"
+            ]
+
+            if self.vep_data:
+                cmd.extend(["-v", f"{self.vep_data}:/opt/vep/.vep"])
+            else:
+                vep_cmd.append("--database")
+
+            cmd.append(self.image)
+            cmd.extend(vep_cmd)
+
+            logging.info(f"Running docker VEP: {' '.join(cmd)}")
+            try:
+                process = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                for line in process.stdout.splitlines():
+                    if line.strip():
+                        try:
+                            results.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Docker VEP failed: {e.stderr}")
+
+        return self._structure_results(results)
+
+class VEPAnnotator:
+    """
+    Dispatcher class for VEP annotation.
+    """
+    def __init__(self, mode: str = "online", assembly: str = "GRCh38", vep_path: str | None = None, vep_data: str | None = None):
+        self.engine: BaseVEPAnnotator
+        if mode == "local":
+            self.engine = LocalVEPAnnotator(assembly, vep_path or "vep", vep_data)
+        elif mode == "docker":
+            self.engine = DockerVEPAnnotator(assembly, vep_path or "ensemblorg/ensembl-vep", vep_data)
+        else:
+            self.engine = OnlineVEPAnnotator(assembly)
+
+    def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
+        return self.engine.get_annotations(hgvs_variants)

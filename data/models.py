@@ -40,12 +40,20 @@ class TracyConfig(BaseModel):
     annotate: str | None = None
     linelimit: int = 10000
 
+class VepMode(str, Enum):
+    ONLINE = "online"
+    LOCAL = "local"
+    DOCKER = "docker"
+
 class HGVSConfig(BaseModel):
     transcript: str | None = None
     gene: str | None = None
     assembly: str = "GRCh38"
     auto_hgvs: bool = False
     auto_vep: bool = False
+    vep_mode: VepMode = VepMode.ONLINE
+    vep_path: str | None = None
+    vep_data: str | None = None
 
 class JobStatus(str, Enum):
     CREATED = "created"

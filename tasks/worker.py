@@ -221,7 +221,12 @@ def process_job_background(job_id: str):
             job_manager.update_job_progress(job_id, 80, "Annotating variants with VEP (this may take a while)...")
             try:
                 from utilities.vep_utils import VEPAnnotator
-                vep_annotator = VEPAnnotator(assembly=job.hgvs_config.assembly or "GRCh38")
+                vep_annotator = VEPAnnotator(
+                    mode=job.hgvs_config.vep_mode.value if hasattr(job.hgvs_config.vep_mode, 'value') else job.hgvs_config.vep_mode,
+                    assembly=job.hgvs_config.assembly or "GRCh38",
+                    vep_path=job.hgvs_config.vep_path,
+                    vep_data=job.hgvs_config.vep_data
+                )
 
                 # 1. Collect all unique HGVS strings found in the results table
                 # We use these directly because VEPAnnotator now handles internal mapping (NG_ -> LRG_ -> NC_) 
