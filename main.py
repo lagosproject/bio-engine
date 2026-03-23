@@ -83,11 +83,21 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Bio-Engine Sidecar")
     parser.add_argument("--tracy-path", type=str, help="Path to the tracy binary")
+    parser.add_argument("--samtools-path", type=str, help="Path to the samtools binary")
+    parser.add_argument("--bgzip-path", type=str, help="Path to the bgzip binary")
     args, unknown = parser.parse_known_args()
 
     if args.tracy_path:
         logger.info(f"Overriding tracy_path from CLI: {args.tracy_path}")
         settings.tracy_path = args.tracy_path
+
+    if args.samtools_path:
+        logger.info(f"Overriding samtools_path from CLI: {args.samtools_path}")
+        settings.samtools_path = args.samtools_path
+
+    if args.bgzip_path:
+        logger.info(f"Overriding bgzip_path from CLI: {args.bgzip_path}")
+        settings.bgzip_path = args.bgzip_path
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)

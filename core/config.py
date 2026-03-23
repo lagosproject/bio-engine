@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # Tracy
     tracy_path: str = os.getenv("TRACY_PATH", "tracy")
 
+    # Samtools & Bgzip
+    samtools_path: str = os.getenv("BIO_SAMTOOLS_PATH", "samtools")
+    bgzip_path: str = os.getenv("BIO_BGZIP_PATH", "bgzip")
+
     # Logging
     log_level: str = "INFO"
     json_logs: bool = True

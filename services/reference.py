@@ -249,8 +249,10 @@ def get_lrg_mapping(accession: str) -> str | None:
 
 def ensure_indexed(ref_path: str) -> str:
     """Compresses and indexes a large reference file. Handles recovery from bad indices."""
-    if not shutil.which("bgzip") or not shutil.which("samtools"):
-        raise RuntimeError("Auto-indexing requires 'bgzip' and 'samtools' installed in PATH.")
+    if not settings.bgzip_path or not settings.samtools_path:
+        # Fallback to shutil.which if settings are somehow empty strings
+        if not shutil.which("bgzip") or not shutil.which("samtools"):
+            raise RuntimeError("Auto-indexing requires 'bgzip' and 'samtools' installed in PATH.")
 
     # Determine paths
     if ref_path.endswith(".gz"):
@@ -265,7 +267,7 @@ def ensure_indexed(ref_path: str) -> str:
     # Step 1: Ensure compressed file exists
     if not os.path.exists(compressed_ref):
         if os.path.exists(source_ref):
-            cmd = f"bgzip -c {source_ref} > {compressed_ref}"
+            cmd = f"{settings.bgzip_path} -c {source_ref} > {compressed_ref}"
             subprocess.run(cmd, shell=True, check=True)
         else:
              raise FileNotFoundError(f"Cannot create {compressed_ref}, source {source_ref} not found.")
@@ -276,10 +278,10 @@ def ensure_indexed(ref_path: str) -> str:
 
     try:
         if not os.path.exists(index_fm9):
-            subprocess.run(["tracy", "index", "-o", index_fm9, compressed_ref], check=True, capture_output=True)
+            subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True, capture_output=True)
 
         if not os.path.exists(fai_index):
-            subprocess.run(["samtools", "faidx", compressed_ref], check=True, capture_output=True)
+            subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True, capture_output=True)
 
     except subprocess.CalledProcessError:
         logger.warning(f"Indexing failed for {compressed_ref}. Attempting to rebuild...")
@@ -291,12 +293,12 @@ def ensure_indexed(ref_path: str) -> str:
 
         # Re-compress if we have source
         if os.path.exists(source_ref):
-             cmd = f"bgzip -c {source_ref} > {compressed_ref}"
+             cmd = f"{settings.bgzip_path} -c {source_ref} > {compressed_ref}"
              subprocess.run(cmd, shell=True, check=True)
 
              # Retry indexing
-             subprocess.run(["tracy", "index", "-o", index_fm9, compressed_ref], check=True)
-             subprocess.run(["samtools", "faidx", compressed_ref], check=True)
+             subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True)
+             subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True)
         else:
             raise RuntimeError(f"Indexing failed and cannot rebuild {compressed_ref} because source {source_ref} is missing.")
 
