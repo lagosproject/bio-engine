@@ -3,6 +3,7 @@ import time
 import httpx
 from typing import List, Dict, Any
 from services.reference import get_lrg_mapping
+from core.proxy_manager import proxy_manager
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +38,13 @@ class EnsemblHGVS:
             self.base_url = "https://rest.ensembl.org"
             
         # We increase the timeout because batch recoding can be heavy on Ensembl's side
-        self.client = httpx.Client(timeout=timeout)
+        self.client = proxy_manager.get_client("ensembl", timeout=timeout)
         self.headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
 
-    def __del__(self):
-        try:
-            self.client.close()
-        except:
-            pass
+    # Removed __del__ as client is managed by ProxyManager
 
     def get_equivalents_batch(self, hgvs_variants: List[str], chunk_size: int = 5) -> Dict[str, List[str]]:
         """

@@ -15,6 +15,7 @@ import httpx
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 from services.reference import get_lrg_mapping
+from core.proxy_manager import proxy_manager
 
 class BaseVEPAnnotator(ABC):
     """
@@ -142,18 +143,14 @@ class OnlineVEPAnnotator(BaseVEPAnnotator):
         else:
             self.base_url = "https://rest.ensembl.org"
 
-        self.client = httpx.Client(timeout=timeout)
+        self.client = proxy_manager.get_client("ensembl", timeout=timeout)
         self.headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
         self.refseq_pattern = re.compile(r'^(NM_|NP_|NC_|NG_)', re.IGNORECASE)
 
-    def __del__(self):
-        try:
-            self.client.close()
-        except Exception:
-            pass
+    # Removed __del__ as client is managed by ProxyManager
 
     def _handle_rate_limit(self, response: httpx.Response) -> bool:
         if response.status_code == 429:

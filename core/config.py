@@ -14,6 +14,8 @@ class Settings(BaseSettings):
 
     # External Services
     entrez_email: str = "example@example.com"
+    http_proxy: str | None = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
+    https_proxy: str | None = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
 
     # Paths (Defaults handled by PersistenceManager if not set)
     # We use a factory to delay PersistenceManager instantiation if possible,

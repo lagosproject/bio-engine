@@ -86,23 +86,24 @@ def configure_proxy(request: ProxyConfigRequest):
     """
     Dynamically configures HTTP/HTTPS proxy settings for the engine.
     """
+    # 1. Update global settings
     if request.http_proxy is not None:
-        if request.http_proxy == "":
-            os.environ.pop("HTTP_PROXY", None)
-            os.environ.pop("http_proxy", None)
-        else:
-            os.environ["HTTP_PROXY"] = request.http_proxy
-            os.environ["http_proxy"] = request.http_proxy
-            
+        from core.config import settings
+        settings.http_proxy = request.http_proxy if request.http_proxy != "" else None
+    
     if request.https_proxy is not None:
-        if request.https_proxy == "":
-            os.environ.pop("HTTPS_PROXY", None)
-            os.environ.pop("https_proxy", None)
-        else:
-            os.environ["HTTPS_PROXY"] = request.https_proxy
-            os.environ["https_proxy"] = request.https_proxy
-            
-    return {"status": "success", "http_proxy": os.environ.get("HTTP_PROXY"), "https_proxy": os.environ.get("HTTPS_PROXY")}
+        from core.config import settings
+        settings.https_proxy = request.https_proxy if request.https_proxy != "" else None
+
+    # 2. Update environment and internal state
+    from core.proxy_manager import proxy_manager
+    proxy_manager.refresh_proxies()
+
+    return {
+        "status": "success", 
+        "http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"), 
+        "https_proxy": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    }
 
 @router.get("/check-reference")
 def check_reference(id: str):
