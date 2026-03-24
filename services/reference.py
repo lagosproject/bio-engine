@@ -267,8 +267,14 @@ def ensure_indexed(ref_path: str) -> str:
     # Step 1: Ensure compressed file exists
     if not os.path.exists(compressed_ref):
         if os.path.exists(source_ref):
-            cmd = f"{settings.bgzip_path} -c {source_ref} > {compressed_ref}"
-            subprocess.run(cmd, shell=True, check=True)
+            logger.info(f"Compressing {source_ref} to {compressed_ref} using {settings.bgzip_path}")
+            try:
+                with open(compressed_ref, "wb") as f:
+                    subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True, capture_output=False)
+            except Exception as e:
+                if os.path.exists(compressed_ref):
+                     os.remove(compressed_ref)
+                raise RuntimeError(f"Failed to compress reference: {e}")
         else:
              raise FileNotFoundError(f"Cannot create {compressed_ref}, source {source_ref} not found.")
 
@@ -283,8 +289,8 @@ def ensure_indexed(ref_path: str) -> str:
         if not os.path.exists(fai_index):
             subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True, capture_output=True)
 
-    except subprocess.CalledProcessError:
-        logger.warning(f"Indexing failed for {compressed_ref}. Attempting to rebuild...")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Indexing failed for {compressed_ref}. Attempting to rebuild... Error: {e.stderr.decode() if e.stderr else str(e)}")
 
         # Cleanup potentially bad files
         for f in [compressed_ref, index_fm9, fai_index, compressed_ref + ".gzi"]:
@@ -293,8 +299,9 @@ def ensure_indexed(ref_path: str) -> str:
 
         # Re-compress if we have source
         if os.path.exists(source_ref):
-             cmd = f"{settings.bgzip_path} -c {source_ref} > {compressed_ref}"
-             subprocess.run(cmd, shell=True, check=True)
+             logger.info(f"Re-compressing {source_ref}...")
+             with open(compressed_ref, "wb") as f:
+                 subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True)
 
              # Retry indexing
              subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True)
