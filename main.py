@@ -34,8 +34,32 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 if getattr(sys, 'frozen', False):
-    logger.info(f"Running in frozen mode. Added {sys._MEIPASS} to PATH. Tracy should be available.")
-
+    bundle_dir = sys._MEIPASS
+    exe_dir = os.path.dirname(sys.executable)
+    logger.info(f"Running in frozen mode.")
+    logger.info(f"Bundle dir (_MEIPASS): {bundle_dir}")
+    logger.info(f"Executable dir: {exe_dir}")
+    
+    # Add bundle_dir to PATH (for internal PyInstaller files)
+    os.environ["PATH"] = bundle_dir + os.pathsep + os.environ["PATH"]
+    
+    # Try to find tracy and bgzip in the executable's directory
+    # They might have the ps-analyzer- prefix and the target triple
+    target_triple = "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-unknown-linux-gnu"
+    
+    for tool_name, setting_attr in [("tracy", "tracy_path"), ("bgzip", "bgzip_path")]:
+        potential_names = [
+            f"ps-analyzer-{tool_name}-{target_triple}.exe" if sys.platform == "win32" else f"ps-analyzer-{tool_name}-{target_triple}",
+            f"ps-analyzer-{tool_name}.exe" if sys.platform == "win32" else f"ps-analyzer-{tool_name}",
+            f"{tool_name}.exe" if sys.platform == "win32" else tool_name
+        ]
+        
+        for name in potential_names:
+            path = os.path.join(exe_dir, name)
+            if os.path.exists(path):
+                logger.info(f"Auto-detected {tool_name} sidecar at: {path}")
+                setattr(settings, setting_attr, path)
+                break
 
 app = FastAPI(title="Bio-Engine Sidecar")
 
