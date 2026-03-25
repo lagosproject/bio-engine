@@ -40,23 +40,25 @@ jobs:
       - name: Install Windows Sidecars (samtools & htslib)
         shell: pwsh
         run: |
-          # Install Scoop
-          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-          Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+          # Install Scoop if not present
+          if (!(Get-Command scoop -ErrorAction SilentlyContinue)) {
+            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+            Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+          }
           
           # Install bioinformatics tools
+          # Use -f to force if already partially there
           scoop install samtools htslib
           
-          # Determine binary locations
-          $samtoolsPath = (Get-Command samtools.exe).Source
-          $bgzipPath = (Get-Command bgzip.exe).Source
-          
-          Write-Host "Found samtools at: $samtoolsPath"
-          Write-Host "Found bgzip at: $bgzipPath"
-          
-          # Add current scoop shim dir to PATH if not already there
-          # (Scoop usually adds it to the user PATH, but for this session we might need to be explicit)
+          # Determine binary locations using absolute Scoop shim path
           $scoopShimDir = Join-Path $env:USERPROFILE "scoop\shims"
+          $samtoolsPath = Join-Path $scoopShimDir "samtools.exe"
+          $bgzipPath = Join-Path $scoopShimDir "bgzip.exe"
+          
+          if (Test-Path $samtoolsPath) { Write-Host "Found samtools at: $samtoolsPath" } else { throw "samtools.exe not found in $scoopShimDir" }
+          if (Test-Path $bgzipPath) { Write-Host "Found bgzip at: $bgzipPath" } else { throw "bgzip.exe not found in $scoopShimDir" }
+          
+          # Add current scoop shim dir to PATH
           echo "$scoopShimDir" >> $env:GITHUB_PATH
 
       - name: Run Windows Binary Test
