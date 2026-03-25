@@ -47,7 +47,7 @@ if getattr(sys, 'frozen', False):
     # They might have the ps-analyzer- prefix and the target triple
     target_triple = "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-unknown-linux-gnu"
     
-    for tool_name, setting_attr in [("tracy", "tracy_path"), ("bgzip", "bgzip_path")]:
+    for tool_name, setting_attr in [("tracy", "tracy_path"), ("bgzip", "bgzip_path"), ("samtools", "samtools_path")]:
         potential_names = [
             f"ps-analyzer-{tool_name}-{target_triple}.exe" if sys.platform == "win32" else f"ps-analyzer-{tool_name}-{target_triple}",
             f"ps-analyzer-{tool_name}.exe" if sys.platform == "win32" else f"ps-analyzer-{tool_name}",
