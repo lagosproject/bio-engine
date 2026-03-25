@@ -37,35 +37,21 @@ jobs:
           done < requirements.txt
           pip install h11 
 
-      - name: Set up Conda
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          auto-update-conda: true
-          python-version: '3.10'
-          channels: bioconda,conda-forge,defaults
-          channel-priority: strict
-          show-channel-urls: true
-
-      - name: Install Sidecars via Conda
-        shell: bash -el {0}
-        run: |
-          conda install samtools htslib -y
-          
-          # Find paths
-          SAMTOOLS_PATH=$(which samtools)
-          BGZIP_PATH=$(which bgzip)
-          echo "Found samtools at: $SAMTOOLS_PATH"
-          echo "Found bgzip at: $BGZIP_PATH"
-          
-          # Ensure they are in Windows PATH format if needed, but 'which' works
-          # Just add the directory to GITHUB_PATH
-          echo "$(dirname $SAMTOOLS_PATH)" >> $GITHUB_PATH
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-samtools mingw-w64-x86_64-htslib
 
       - name: Run Windows Binary Test
-        shell: bash -el {0}
+        shell: msys2 {0}
         env:
           BIO_BGZIP_PATH: bgzip
           BIO_SAMTOOLS_PATH: samtools
           TRACY_PATH: echo
         run: |
-          python tests/test_windows_binaries.py
+          # Use the python from the runner, but we need to find it from MSYS2
+          # Or just use the MSYS2 python? Better to use the runner's python.
+          # The runner python is usually in PATH already.
+          /c/hostedtoolcache/windows/Python/3.10.11/x64/python.exe tests/test_windows_binaries.py
