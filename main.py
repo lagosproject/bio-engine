@@ -87,6 +87,12 @@ if __name__ == "__main__":
     parser.add_argument("--bgzip-path", type=str, help="Path to the bgzip binary")
     args, unknown = parser.parse_known_args()
 
+    logger.info(f"Received CLI arguments: {sys.argv}")
+    logger.info(f"Unknown arguments: {unknown}")
+    logger.info(f"Environment BIO_SAMTOOLS_PATH: {os.getenv('BIO_SAMTOOLS_PATH')}")
+    logger.info(f"Environment BIO_BGZIP_PATH: {os.getenv('BIO_BGZIP_PATH')}")
+    logger.info(f"Environment TRACY_PATH: {os.getenv('TRACY_PATH')}")
+
     if args.tracy_path:
         logger.info(f"Overriding tracy_path from CLI: {args.tracy_path}")
         settings.tracy_path = args.tracy_path
