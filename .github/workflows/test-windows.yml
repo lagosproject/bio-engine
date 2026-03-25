@@ -37,34 +37,35 @@ jobs:
           done < requirements.txt
           pip install h11 
 
-      - name: Install Windows Sidecars (samtools & htslib)
-        shell: pwsh
+      - name: Set up Conda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: '3.10'
+          channels: bioconda,conda-forge,defaults
+          channel-priority: strict
+          show-channel-urls: true
+
+      - name: Install Sidecars via Conda
+        shell: bash -el {0}
         run: |
-          # Install Scoop if not present
-          if (!(Get-Command scoop -ErrorAction SilentlyContinue)) {
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-            Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
-          }
+          conda install samtools htslib -y
           
-          # Install bioinformatics tools
-          # Use -f to force if already partially there
-          scoop install samtools htslib
+          # Find paths
+          SAMTOOLS_PATH=$(which samtools)
+          BGZIP_PATH=$(which bgzip)
+          echo "Found samtools at: $SAMTOOLS_PATH"
+          echo "Found bgzip at: $BGZIP_PATH"
           
-          # Determine binary locations using absolute Scoop shim path
-          $scoopShimDir = Join-Path $env:USERPROFILE "scoop\shims"
-          $samtoolsPath = Join-Path $scoopShimDir "samtools.exe"
-          $bgzipPath = Join-Path $scoopShimDir "bgzip.exe"
-          
-          if (Test-Path $samtoolsPath) { Write-Host "Found samtools at: $samtoolsPath" } else { throw "samtools.exe not found in $scoopShimDir" }
-          if (Test-Path $bgzipPath) { Write-Host "Found bgzip at: $bgzipPath" } else { throw "bgzip.exe not found in $scoopShimDir" }
-          
-          # Add current scoop shim dir to PATH
-          echo "$scoopShimDir" >> $env:GITHUB_PATH
+          # Ensure they are in Windows PATH format if needed, but 'which' works
+          # Just add the directory to GITHUB_PATH
+          echo "$(dirname $SAMTOOLS_PATH)" >> $GITHUB_PATH
 
       - name: Run Windows Binary Test
+        shell: bash -el {0}
         env:
-          BIO_BGZIP_PATH: bgzip.exe
-          BIO_SAMTOOLS_PATH: samtools.exe
-          TRACY_PATH: echo "Mocking tracy" # We can mock tracy for this specific test if not needed
+          BIO_BGZIP_PATH: bgzip
+          BIO_SAMTOOLS_PATH: samtools
+          TRACY_PATH: echo
         run: |
           python tests/test_windows_binaries.py
