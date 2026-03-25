@@ -55,8 +55,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: bash -el {0}
         run: |
-          # Install pysam via conda (has pre-built Windows wheels)
-          conda install -y pysam htslib
+          # Install pysam via conda (has pre-built Windows wheels, bundles htslib)
+          conda install -y pysam
           
           # Install the rest via pip
           pip install --upgrade pip
