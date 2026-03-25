@@ -109,7 +109,12 @@ if __name__ == "__main__":
     parser.add_argument("--tracy-path", type=str, help="Path to the tracy binary")
     parser.add_argument("--samtools-path", type=str, help="Path to the samtools binary")
     parser.add_argument("--bgzip-path", type=str, help="Path to the bgzip binary")
+    parser.add_argument("--resource-path", type=str, help="Path to the application resources (where DLLs are located)")
     args, unknown = parser.parse_known_args()
+
+    if args.resource_path:
+        logger.info(f"Adding resource path to PATH: {args.resource_path}")
+        os.environ["PATH"] = args.resource_path + os.pathsep + os.environ["PATH"]
 
     logger.info(f"Received CLI arguments: {sys.argv}")
     logger.info(f"Unknown arguments: {unknown}")

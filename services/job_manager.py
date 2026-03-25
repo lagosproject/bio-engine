@@ -274,10 +274,39 @@ class JobManager:
             temp_path.replace(job_path)
 
         except Exception as e:
-            logger.error(f"Failed to save job {job.id}: {e}")
+            logger.error(f"Failed to write temp job file {temp_path}: {e}")
             if temp_path.exists():
                 temp_path.unlink()
             raise
+
+        # Atomic move with retries for Windows
+        import time
+        max_retries = 5
+        for i in range(max_retries):
+            try:
+                if job_path.exists():
+                    # On Windows, replace() can fail if the file is open.
+                    # We try to remove it first, which also might fail.
+                    try:
+                        job_path.unlink()
+                    except PermissionError:
+                        pass 
+                
+                temp_path.replace(job_path)
+                return # Success
+            except PermissionError as e:
+                if i == max_retries - 1:
+                    logger.error(f"Failed to save job {job.id} after {max_retries} attempts: {e}")
+                    if temp_path.exists():
+                        temp_path.unlink()
+                    raise
+                logger.warning(f"Retrying job save {job.id} due to WinError 5 (Attempt {i+1}/{max_retries})")
+                time.sleep(0.2 * (i + 1)) # Exponential backoff
+            except Exception as e:
+                logger.error(f"Unexpected error saving job {job.id}: {e}")
+                if temp_path.exists():
+                    temp_path.unlink()
+                raise
 
     def list_jobs(self) -> list[Job]:
         """

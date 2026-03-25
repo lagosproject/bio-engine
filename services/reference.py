@@ -267,14 +267,19 @@ def ensure_indexed(ref_path: str) -> str:
     # Step 1: Ensure compressed file exists
     if not os.path.exists(compressed_ref):
         if os.path.exists(source_ref):
-            logger.info(f"Compressing {source_ref} to {compressed_ref} using {settings.bgzip_path}")
             try:
-                with open(compressed_ref, "wb") as f:
-                    subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True, capture_output=False)
-            except Exception as e:
-                if os.path.exists(compressed_ref):
-                     os.remove(compressed_ref)
-                raise RuntimeError(f"Failed to compress reference: {e}")
+                import pysam
+                logger.info(f"Compressing {source_ref} to {compressed_ref} using pysam.tabix_compress")
+                pysam.tabix_compress(source_ref, compressed_ref, force=True)
+            except (ImportError, Exception) as e:
+                logger.warning(f"pysam.tabix_compress failed: {e}. Falling back to {settings.bgzip_path}")
+                try:
+                    with open(compressed_ref, "wb") as f:
+                        subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True, capture_output=False)
+                except Exception as sub_e:
+                    if os.path.exists(compressed_ref):
+                         os.remove(compressed_ref)
+                    raise RuntimeError(f"Failed to compress reference: {sub_e}")
         else:
              raise FileNotFoundError(f"Cannot create {compressed_ref}, source {source_ref} not found.")
 
@@ -305,9 +310,14 @@ def ensure_indexed(ref_path: str) -> str:
 
         # Re-compress if we have source
         if os.path.exists(source_ref):
-             logger.info(f"Re-compressing {source_ref}...")
-             with open(compressed_ref, "wb") as f:
-                 subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True)
+             try:
+                 import pysam
+                 logger.info(f"Re-compressing {source_ref} using pysam...")
+                 pysam.tabix_compress(source_ref, compressed_ref, force=True)
+             except (ImportError, Exception) as e:
+                 logger.warning(f"pysam re-compression failed: {e}. Falling back to {settings.bgzip_path}")
+                 with open(compressed_ref, "wb") as f:
+                     subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True)
 
              # Retry indexing
              subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True)
