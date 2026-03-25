@@ -112,9 +112,22 @@ if __name__ == "__main__":
     parser.add_argument("--resource-path", type=str, help="Path to the application resources (where DLLs are located)")
     args, unknown = parser.parse_known_args()
 
+    def clean_win_path(p):
+        if p and p.startswith('\\\\?\\'):
+            return p[4:]
+        return p
+
     if args.resource_path:
-        logger.info(f"Adding resource path to PATH: {args.resource_path}")
-        os.environ["PATH"] = args.resource_path + os.pathsep + os.environ["PATH"]
+        resource_path = clean_win_path(args.resource_path)
+        logger.info(f"Adding resource path to PATH: {resource_path}")
+        os.environ["PATH"] = resource_path + os.pathsep + os.environ["PATH"]
+
+    # Also add the executable's directory to PATH for sidecar DLLs
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        if exe_dir not in os.environ["PATH"]:
+            os.environ["PATH"] = exe_dir + os.pathsep + os.environ["PATH"]
+            logger.info(f"Added executable dir to PATH: {exe_dir}")
 
     logger.info(f"Received CLI arguments: {sys.argv}")
     logger.info(f"Unknown arguments: {unknown}")

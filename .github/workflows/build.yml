@@ -19,37 +19,68 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      # ---- LINUX: Use pip directly ----
+      - name: Set up Python (Linux)
+        if: matrix.os != 'windows-latest'
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install Dependencies (Linux)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          # Install each requirement individually so a failure in one
-          # platform-specific package (e.g. pysam on Windows) does not
-          # prevent the rest from being installed.
           while IFS= read -r line || [ -n "$line" ]; do
-            # Skip comments and empty lines
             line=$(echo "$line" | sed 's/#.*//' | xargs)
             [ -z "$line" ] && continue
-            # Strip pip-compile indentation/annotations
             [[ "$line" =~ ^[[:space:]] ]] && continue
             pip install "$line" || echo "WARNING: Failed to install $line (may be platform-specific)"
           done < requirements.txt
           pip install pyinstaller
 
+      # ---- WINDOWS: Use Miniconda (provides pysam via conda-forge) ----
+      - name: Set up Miniconda (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          python-version: '3.10'
+          channels: conda-forge,defaults
+          channel-priority: strict
+          activate-environment: bio-engine
+          auto-activate-base: false
+
+      - name: Install Dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash -el {0}
+        run: |
+          # Install pysam via conda (has pre-built Windows wheels)
+          conda install -y pysam htslib
+          
+          # Install the rest via pip
+          pip install --upgrade pip
+          while IFS= read -r line || [ -n "$line" ]; do
+            line=$(echo "$line" | sed 's/#.*//' | xargs)
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]] ]] && continue
+            # Skip pysam (already installed via conda)
+            [[ "$line" == pysam* ]] && continue
+            pip install "$line" || echo "WARNING: Failed to install $line"
+          done < requirements.txt
+          pip install pyinstaller
+
       - name: Verify critical packages
+        shell: bash -el {0}
         run: |
           python -c "import uvicorn; print(f'uvicorn OK: {uvicorn.__file__}')"
           python -c "import fastapi; print(f'fastapi OK: {fastapi.__file__}')"
           python -c "import h11; print(f'h11 OK: {h11.__file__}')"
           python -c "import starlette; print(f'starlette OK: {starlette.__file__}')"
+          python -c "import pysam; print(f'pysam OK: {pysam.__file__}')" || echo "WARNING: pysam not found"
 
       - name: Build with PyInstaller
+        shell: bash -el {0}
         run: pyinstaller bio-engine.spec
 
       - name: Rename Linux Binary
