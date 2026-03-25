@@ -261,18 +261,18 @@ class JobManager:
 
     def _save_job(self, job: Job):
         """
-        Atomically saves the Job object to a JSON file.
+        Atomically saves the Job object to a JSON file with retries for Windows locking issues.
+        Uses a unique temporary file to avoid race conditions.
         """
         job_path = self._get_job_path(job.id)
-        # Use atomic write via temp file
-        temp_path = job_path.with_suffix(".tmp")
+        # Use a unique temp file to avoid race conditions between concurrent saves
+        import uuid
+        import time
+        temp_path = job_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        
         try:
             with open(temp_path, "wb") as f:
                 f.write(orjson.dumps(job.model_dump(), option=orjson.OPT_INDENT_2))
-
-            # Atomic move
-            temp_path.replace(job_path)
-
         except Exception as e:
             logger.error(f"Failed to write temp job file {temp_path}: {e}")
             if temp_path.exists():
@@ -280,20 +280,13 @@ class JobManager:
             raise
 
         # Atomic move with retries for Windows
-        import time
         max_retries = 5
         for i in range(max_retries):
             try:
-                if job_path.exists():
-                    # On Windows, replace() can fail if the file is open.
-                    # We try to remove it first, which also might fail.
-                    try:
-                        job_path.unlink()
-                    except PermissionError:
-                        pass 
-                
+                # On Windows, replace() can fail if the destination file is open.
+                # Path.replace() in Python 3.8+ handles the overwriting correctly if possible.
                 temp_path.replace(job_path)
-                return # Success
+                return  # Success
             except PermissionError as e:
                 if i == max_retries - 1:
                     logger.error(f"Failed to save job {job.id} after {max_retries} attempts: {e}")
@@ -301,9 +294,9 @@ class JobManager:
                         temp_path.unlink()
                     raise
                 logger.warning(f"Retrying job save {job.id} due to WinError 5 (Attempt {i+1}/{max_retries})")
-                time.sleep(0.2 * (i + 1)) # Exponential backoff
+                time.sleep(0.2 * (i + 1))
             except Exception as e:
-                logger.error(f"Unexpected error saving job {job.id}: {e}")
+                logger.error(f"Unexpected error atomic-moving job {job.id}: {e}")
                 if temp_path.exists():
                     temp_path.unlink()
                 raise
