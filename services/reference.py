@@ -287,7 +287,13 @@ def ensure_indexed(ref_path: str) -> str:
             subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True, capture_output=True)
 
         if not os.path.exists(fai_index):
-            subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True, capture_output=True)
+            try:
+                import pysam
+                logger.info(f"Indexing {compressed_ref} using pysam...")
+                pysam.faidx(compressed_ref)
+            except (ImportError, Exception) as e:
+                logger.warning(f"pysam indexing failed or unavailable: {e}. Falling back to {settings.samtools_path}")
+                subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True, capture_output=True)
 
     except subprocess.CalledProcessError as e:
         logger.warning(f"Indexing failed for {compressed_ref}. Attempting to rebuild... Error: {e.stderr.decode() if e.stderr else str(e)}")
@@ -305,7 +311,13 @@ def ensure_indexed(ref_path: str) -> str:
 
              # Retry indexing
              subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True)
-             subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True)
+             try:
+                 import pysam
+                 logger.info(f"Re-indexing {compressed_ref} using pysam...")
+                 pysam.faidx(compressed_ref)
+             except (ImportError, Exception) as e:
+                 logger.warning(f"pysam re-indexing failed: {e}. Falling back to {settings.samtools_path}")
+                 subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True)
         else:
             raise RuntimeError(f"Indexing failed and cannot rebuild {compressed_ref} because source {source_ref} is missing.")
 
