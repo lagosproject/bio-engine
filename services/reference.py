@@ -249,16 +249,14 @@ def get_lrg_mapping(accession: str) -> str | None:
 
 def ensure_indexed(ref_path: str) -> str:
     """Compresses and indexes a large reference file. Handles recovery from bad indices."""
-    if not settings.bgzip_path or not settings.samtools_path:
-        # Fallback to shutil.which if settings are somehow empty strings
-        if not shutil.which("bgzip") or not shutil.which("samtools"):
-            raise RuntimeError("Auto-indexing requires 'bgzip' and 'samtools' installed in PATH.")
+    
+    # Check for binaries, but don't fail immediately if pysam is available
+    bgzip_available = shutil.which(settings.bgzip_path) if settings.bgzip_path else None
+    samtools_available = shutil.which(settings.samtools_path) if settings.samtools_path else None
 
     # Determine paths
     if ref_path.endswith(".gz"):
         compressed_ref = ref_path
-        # If input is .gz, we hope it's bgzip. If we have the source .fasta, we might rebuild if needed.
-        # But for now assume it's what we want or we will fail and retry if we can find source.
         source_ref = ref_path[:-3] # remove .gz
     else:
         compressed_ref = ref_path + ".gz"
@@ -267,19 +265,33 @@ def ensure_indexed(ref_path: str) -> str:
     # Step 1: Ensure compressed file exists
     if not os.path.exists(compressed_ref):
         if os.path.exists(source_ref):
+            success = False
+            # Try pysam first
             try:
                 import pysam
                 logger.info(f"Compressing {source_ref} to {compressed_ref} using pysam.tabix_compress")
                 pysam.tabix_compress(source_ref, compressed_ref, force=True)
+                success = True
             except (ImportError, Exception) as e:
-                logger.warning(f"pysam.tabix_compress failed: {e}. Falling back to {settings.bgzip_path}")
-                try:
-                    with open(compressed_ref, "wb") as f:
-                        subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True, capture_output=False)
-                except Exception as sub_e:
-                    if os.path.exists(compressed_ref):
-                         os.remove(compressed_ref)
-                    raise RuntimeError(f"Failed to compress reference: {sub_e}")
+                logger.warning(f"pysam.tabix_compress failed or unavailable: {e}")
+                
+            # Fallback to binary
+            if not success:
+                if bgzip_available:
+                    logger.info(f"Falling back to {settings.bgzip_path} for compression")
+                    try:
+                        with open(compressed_ref, "wb") as f:
+                            subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True, capture_output=False)
+                        success = True
+                    except Exception as sub_e:
+                        logger.error(f"bgzip fallback failed: {sub_e}")
+                else:
+                    logger.error("bgzip binary not found and pysam failed.")
+
+            if not success:
+                if os.path.exists(compressed_ref):
+                     os.remove(compressed_ref)
+                raise RuntimeError(f"Failed to compress reference {source_ref}")
         else:
              raise FileNotFoundError(f"Cannot create {compressed_ref}, source {source_ref} not found.")
 
@@ -288,17 +300,36 @@ def ensure_indexed(ref_path: str) -> str:
     fai_index = compressed_ref + ".fai"
 
     try:
+        # Tracy indexing (required for tracy functionality)
         if not os.path.exists(index_fm9):
-            subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True, capture_output=True)
+            if shutil.which(settings.tracy_path):
+                subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True, capture_output=True)
+            else:
+                logger.warning(f"Tracy binary not found at {settings.tracy_path}, skipping .fm9 index")
 
+        # FAI indexing
         if not os.path.exists(fai_index):
+            success = False
+            # Try pysam
             try:
                 import pysam
                 logger.info(f"Indexing {compressed_ref} using pysam...")
                 pysam.faidx(compressed_ref)
+                success = True
             except (ImportError, Exception) as e:
-                logger.warning(f"pysam indexing failed or unavailable: {e}. Falling back to {settings.samtools_path}")
-                subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True, capture_output=True)
+                logger.warning(f"pysam indexing failed or unavailable: {e}")
+
+            # Fallback to samtools
+            if not success:
+                if samtools_available:
+                    logger.info(f"Falling back to {settings.samtools_path} for indexing")
+                    subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True, capture_output=True)
+                    success = True
+                else:
+                    logger.error("samtools binary not found and pysam failed.")
+
+            if not success:
+                raise RuntimeError(f"Failed to index reference {compressed_ref}")
 
     except subprocess.CalledProcessError as e:
         logger.warning(f"Indexing failed for {compressed_ref}. Attempting to rebuild... Error: {e.stderr.decode() if e.stderr else str(e)}")
@@ -308,26 +339,9 @@ def ensure_indexed(ref_path: str) -> str:
             if os.path.exists(f):
                 os.remove(f)
 
-        # Re-compress if we have source
+        # Retry logic (recursive-ish)
         if os.path.exists(source_ref):
-             try:
-                 import pysam
-                 logger.info(f"Re-compressing {source_ref} using pysam...")
-                 pysam.tabix_compress(source_ref, compressed_ref, force=True)
-             except (ImportError, Exception) as e:
-                 logger.warning(f"pysam re-compression failed: {e}. Falling back to {settings.bgzip_path}")
-                 with open(compressed_ref, "wb") as f:
-                     subprocess.run([settings.bgzip_path, "-c", source_ref], stdout=f, check=True)
-
-             # Retry indexing
-             subprocess.run([settings.tracy_path, "index", "-o", index_fm9, compressed_ref], check=True)
-             try:
-                 import pysam
-                 logger.info(f"Re-indexing {compressed_ref} using pysam...")
-                 pysam.faidx(compressed_ref)
-             except (ImportError, Exception) as e:
-                 logger.warning(f"pysam re-indexing failed: {e}. Falling back to {settings.samtools_path}")
-                 subprocess.run([settings.samtools_path, "faidx", compressed_ref], check=True)
+             return ensure_indexed(source_ref)
         else:
             raise RuntimeError(f"Indexing failed and cannot rebuild {compressed_ref} because source {source_ref} is missing.")
 
