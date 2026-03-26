@@ -8,6 +8,7 @@ on:
       - 'services/reference.py'
       - '.github/workflows/test-linux-pysam.yml'
       - 'tests/test_linux_pysam.py'
+      - 'tests/test_ryr1_pysam.py'
       - 'requirements.txt'
 
 jobs:
@@ -30,6 +31,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run pysam Verification Test
+      - name: Run Generic pysam Verification
         run: |
           python tests/test_linux_pysam.py
+
+      - name: Run RYR1 Gene search and pysam Indexing Test
+        run: |
+          python tests/test_ryr1_pysam.py
