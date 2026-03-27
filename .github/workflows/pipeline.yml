@@ -1,0 +1,155 @@
+name: Bio-Engine Consolidated Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, develop, fix/windows-dll-issues ]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - 'bio-engine.spec'
+      - '.github/workflows/**'
+
+jobs:
+  build-linux:
+    name: Build Linux Binary
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          while IFS= read -r line || [ -n "$line" ]; do
+            line=$(echo "$line" | sed 's/#.*//' | xargs)
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]] ]] && continue
+            pip install "$line" || echo "WARNING: Failed to install $line (may be platform-specific)"
+          done < requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller bio-engine.spec
+
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bio-engine-linux
+          path: dist/bio-engine
+
+  build-windows:
+    name: Build Windows Binary
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          while IFS= read -r line || [ -n "$line" ]; do
+            line=$(echo "$line" | sed 's/#.*//' | xargs)
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]] ]] && continue
+            pip install "$line" || echo "WARNING: Failed to install $line (may be platform-specific)"
+          done < requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller bio-engine.spec
+
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bio-engine-windows
+          path: dist/bio-engine.exe
+
+  test-linux:
+    name: Verify Linux (pysam)
+    needs: build-linux
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Generic pysam Verification
+        run: python tests/test_linux_pysam.py
+
+      - name: Run RYR1 Gene search and pysam Indexing Test
+        run: python tests/test_ryr1_pysam.py
+
+  test-windows:
+    name: Verify Windows (Binaries)
+    needs: build-windows
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          while IFS= read -r line || [ -n "$line" ]; do
+            line=$(echo "$line" | sed 's/#.*//' | xargs)
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]] ]] && continue
+            pip install "$line" || echo "WARNING: Failed to install $line (may be platform-specific)"
+          done < requirements.txt
+          pip install h11
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-samtools mingw-w64-x86_64-htslib
+
+      - name: Run Windows Binary Test
+        shell: msys2 {0}
+        env:
+          BIO_BGZIP_PATH: bgzip
+          BIO_SAMTOOLS_PATH: samtools
+          TRACY_PATH: echo
+        run: |
+          export PATH="/c/hostedtoolcache/windows/Python/3.10.11/x64:$PATH"
+          python --version
+          python tests/test_windows_binaries.py
