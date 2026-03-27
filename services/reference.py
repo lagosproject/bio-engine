@@ -329,7 +329,8 @@ def ensure_indexed(ref_path: str) -> str:
                     logger.error("samtools binary not found and pysam failed.")
 
             if not success:
-                raise RuntimeError(f"Failed to index reference {compressed_ref}")
+                logger.error(f"Failed to index reference {compressed_ref}. Continuing without index.")
+                return compressed_ref
 
     except subprocess.CalledProcessError as e:
         logger.warning(f"Indexing failed for {compressed_ref}. Attempting to rebuild... Error: {e.stderr.decode() if e.stderr else str(e)}")
@@ -341,8 +342,13 @@ def ensure_indexed(ref_path: str) -> str:
 
         # Retry logic (recursive-ish)
         if os.path.exists(source_ref):
-             return ensure_indexed(source_ref)
+             try:
+                 return ensure_indexed(source_ref)
+             except Exception as retry_e:
+                 logger.error(f"Rebuild failed: {retry_e}. Returning original path.")
+                 return source_ref
         else:
-            raise RuntimeError(f"Indexing failed and cannot rebuild {compressed_ref} because source {source_ref} is missing.")
+            logger.error(f"Indexing failed and cannot rebuild {compressed_ref} because source {source_ref} is missing. Returning original path.")
+            return ref_path
 
     return compressed_ref

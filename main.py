@@ -120,7 +120,16 @@ if __name__ == "__main__":
     if args.resource_path:
         resource_path = clean_win_path(args.resource_path)
         logger.info(f"Adding resource path to PATH: {resource_path}")
-        os.environ["PATH"] = resource_path + os.pathsep + os.environ["PATH"]
+        
+        # Add primary resource path
+        if resource_path not in os.environ["PATH"]:
+            os.environ["PATH"] = resource_path + os.pathsep + os.environ["PATH"]
+            
+        # Also add "binaries" subfolder if it exists (common in Tauri resource structure)
+        binaries_path = os.path.join(resource_path, "binaries")
+        if os.path.exists(binaries_path) and binaries_path not in os.environ["PATH"]:
+            logger.info(f"Adding binaries subdirectory to PATH: {binaries_path}")
+            os.environ["PATH"] = binaries_path + os.pathsep + os.environ["PATH"]
 
     # Also add the executable's directory to PATH for sidecar DLLs
     if getattr(sys, 'frozen', False):
@@ -128,6 +137,10 @@ if __name__ == "__main__":
         if exe_dir not in os.environ["PATH"]:
             os.environ["PATH"] = exe_dir + os.pathsep + os.environ["PATH"]
             logger.info(f"Added executable dir to PATH: {exe_dir}")
+
+    # Log the final path on Windows for debugging if needed
+    if sys.platform == "win32":
+        logger.debug(f"Effective system PATH: {os.environ['PATH']}")
 
     logger.info(f"Received CLI arguments: {sys.argv}")
     logger.info(f"Unknown arguments: {unknown}")
