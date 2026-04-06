@@ -121,26 +121,56 @@ if __name__ == "__main__":
         resource_path = clean_win_path(args.resource_path)
         logger.info(f"Adding resource path to PATH: {resource_path}")
         
-        # Add primary resource path
-        if resource_path not in os.environ["PATH"]:
-            os.environ["PATH"] = resource_path + os.pathsep + os.environ["PATH"]
-            
-        # Also add "binaries" subfolder if it exists (common in Tauri resource structure)
-        binaries_path = os.path.join(resource_path, "binaries")
-        if os.path.exists(binaries_path) and binaries_path not in os.environ["PATH"]:
-            logger.info(f"Adding binaries subdirectory to PATH: {binaries_path}")
-            os.environ["PATH"] = binaries_path + os.pathsep + os.environ["PATH"]
+        # We search for potential DLL locations relative to the resource_path
+        # Best Practice: Cover multiple common Tauri 2 directory patterns
+        potential_dll_dirs = [
+             resource_path,                                    # Root
+             os.path.join(resource_path, "binaries"),          # binaries folder
+             os.path.join(resource_path, "resources"),         # resources folder
+             os.path.join(resource_path, "resources", "binaries") # resources/binaries folder
+        ]
+        
+        for p in potential_dll_dirs:
+             if os.path.isdir(p):
+                 if p not in os.environ["PATH"]:
+                     os.environ["PATH"] = p + os.pathsep + os.environ["PATH"]
+                     logger.info(f"Added to PATH: {p}")
+             else:
+                 logger.debug(f"Path does not exist, skipping: {p}")
 
-    # Also add the executable's directory to PATH for sidecar DLLs
+    # Also add the directory of the currently running executable to PATH
+    # This ensures sidecar-relative DLLs are found.
+    # We use both sys.executable and sys._MEIPASS (if frozen)
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(sys.executable)
         if exe_dir not in os.environ["PATH"]:
             os.environ["PATH"] = exe_dir + os.pathsep + os.environ["PATH"]
             logger.info(f"Added executable dir to PATH: {exe_dir}")
+        
+        bundle_dir = getattr(sys, '_MEIPASS', None)
+        if bundle_dir and bundle_dir not in os.environ["PATH"]:
+             os.environ["PATH"] = bundle_dir + os.pathsep + os.environ["PATH"]
+             logger.info(f"Added bundle dir to PATH: {bundle_dir}")
 
-    # Log the final path on Windows for debugging if needed
+    # FINAL CHECK: Look for where zlib1.dll actually is in the app directory
+    # (Aggressive discovery fallback)
+    if sys.platform == "win32" and args.resource_path:
+        found_zlib = False
+        for root, dirs, files in os.walk(clean_win_path(args.resource_path)):
+            if "zlib1.dll" in files:
+                if root not in os.environ["PATH"]:
+                    os.environ["PATH"] = root + os.pathsep + os.environ["PATH"]
+                    logger.info(f"Discovered and added DLL folder to PATH: {root}")
+                    found_zlib = True
+                    break
+        if not found_zlib:
+            logger.warning("Could not find zlib1.dll in resource path. Sidecars might fail.")
+
+    # Log the final path on Windows for debugging
     if sys.platform == "win32":
-        logger.debug(f"Effective system PATH: {os.environ['PATH']}")
+        logger.info(f"Final environment PATH contains {len(os.environ['PATH'].split(os.pathsep))} entries.")
+        # Only log full PATH in debug mode to avoid log pollution
+        logger.debug(f"Full effective PATH: {os.environ['PATH']}")
 
     logger.info(f"Received CLI arguments: {sys.argv}")
     logger.info(f"Unknown arguments: {unknown}")
