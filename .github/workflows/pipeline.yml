@@ -153,3 +153,17 @@ jobs:
           export PATH="/c/hostedtoolcache/windows/Python/3.10.11/x64:$PATH"
           python --version
           python tests/test_windows_binaries.py
+
+      - name: Prep Isolated environment for bgzip
+        shell: msys2 {0}
+        run: |
+          mkdir -p isolated_test
+          cp /mingw64/bin/bgzip.exe isolated_test/bgzip.exe
+          echo "Isolated environment prepped"
+
+      - name: Run Windows Isolated Test (to catch DLL issues)
+        shell: pwsh
+        env:
+          BIO_BGZIP_PATH: isolated_test\bgzip.exe
+        run: |
+          python tests/test_isolated_bgzip.py
