@@ -1,9 +1,10 @@
 name: Bio-Engine Consolidated Pipeline
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, develop, fix/windows-dll-issues ]
+    branches: [ master, main, develop, fix/windows-dll-issues ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
     paths:
       - '**.py'
       - 'requirements.txt'
@@ -178,3 +179,41 @@ jobs:
           BIO_BGZIP_PATH: isolated_test\bgzip.exe
         run: |
           python tests/test_isolated_bgzip.py
+
+  release:
+    name: Upload to Release
+    needs: [test-linux, test-windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Linux Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bio-engine-linux
+          path: .
+
+      - name: Download Windows Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bio-engine-windows
+          path: .
+
+      - name: Prepare Binaries for Release
+        run: |
+          mv bio-engine bio-engine-ubuntu-22.04
+          mv bio-engine.exe bio-engine.exe
+          ls -l
+
+      - name: Upload to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} \
+            bio-engine-ubuntu-22.04 \
+            bio-engine.exe \
+            --clobber
