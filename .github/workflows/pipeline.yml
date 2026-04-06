@@ -154,14 +154,25 @@ jobs:
           python --version
           python tests/test_windows_binaries.py
 
-      - name: Prep Isolated environment for bgzip
+      - name: Prep Isolated environment (Diagnostic & Bundling)
         shell: msys2 {0}
         run: |
           mkdir -p isolated_test
           cp /mingw64/bin/bgzip.exe isolated_test/bgzip.exe
-          echo "Isolated environment prepped"
+          cp /mingw64/bin/samtools.exe isolated_test/samtools.exe || true
+          
+          echo "### Diagnostic: Identifying dependencies for bgzip ###"
+          ldd /mingw64/bin/bgzip.exe
+          
+          # Copy all DLLs mentioned by ldd that are in /mingw64/bin/
+          # This is a robust way to ensure we catch everything
+          ldd /mingw64/bin/bgzip.exe | grep /mingw64/bin/ | awk '{print $3}' | xargs -I {} cp {} isolated_test/
+          
+          echo "Contents of isolated_test:"
+          ls -l isolated_test
+          echo "Isolated environment prepped with dependencies"
 
-      - name: Run Windows Isolated Test (to catch DLL issues)
+      - name: Run Windows Isolated Test (to confirm fix)
         shell: pwsh
         env:
           BIO_BGZIP_PATH: isolated_test\bgzip.exe
