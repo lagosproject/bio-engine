@@ -140,6 +140,16 @@ def process_job_background(job_id: str):
         job_output_base = tempfile.mkdtemp(prefix=f"ms_analyzer_{job_id}_")
         logger.info(f"Created job output directory: {job_output_base}")
 
+        # Create an ordering map to preserve patient/read sequence
+        order_map = {}
+        order_idx = 0
+        for patient in job.patients:
+            pid = str(patient.get("id"))
+            for read_entry in patient.get("reads", []):
+                r_path = read_entry['file'] if isinstance(read_entry, dict) else str(read_entry)
+                order_map[(pid, r_path)] = order_idx
+                order_idx += 1
+
         # Prepare tasks for parallel execution
         max_workers = min(32, (os.cpu_count() or 1) + 4)
 
@@ -185,6 +195,9 @@ def process_job_background(job_id: str):
                 # Progress from 15% to 80%
                 progress_percent = 15 + int((completed_reads / total_reads) * 65)
                 job_manager.update_job_progress(job_id, progress_percent, f"Processed {completed_reads}/{total_reads} reads...")
+
+        # Sort results based on original submission order
+        results.sort(key=lambda x: order_map.get((str(x.get("patientId")), x.get("readPath")), 999))
 
         # 1. Collect all unique primary HGVS variants found by Tracy
         all_alternatives = {}
