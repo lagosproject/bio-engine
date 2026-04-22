@@ -110,6 +110,7 @@ if __name__ == "__main__":
     parser.add_argument("--samtools-path", type=str, help="Path to the samtools binary")
     parser.add_argument("--bgzip-path", type=str, help="Path to the bgzip binary")
     parser.add_argument("--resource-path", type=str, help="Path to the application resources (where DLLs are located)")
+    parser.add_argument("--data-dir", type=str, help="Path to the application data directory (logs, jobs, cache)")
     args, unknown = parser.parse_known_args()
 
     def clean_win_path(p):
@@ -189,6 +190,22 @@ if __name__ == "__main__":
     if args.bgzip_path:
         logger.info(f"Overriding bgzip_path from CLI: {args.bgzip_path}")
         settings.bgzip_path = args.bgzip_path
+
+    if args.data_dir:
+        data_dir = clean_win_path(args.data_dir)
+        logger.info(f"Overriding data directory from CLI: {data_dir}")
+        settings.logs_dir = os.path.join(data_dir, "logs")
+        settings.jobs_dir = os.path.join(data_dir, "jobs")
+        settings.cache_dir = os.path.join(data_dir, "ncbi_cache")
+        
+        # Ensure directories exist
+        os.makedirs(settings.logs_dir, exist_ok=True)
+        os.makedirs(settings.jobs_dir, exist_ok=True)
+        os.makedirs(settings.cache_dir, exist_ok=True)
+        
+        # Re-initialize logging with new path
+        setup_logging()
+        logger.info(f"Logging re-initialized at: {settings.logs_dir}")
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)

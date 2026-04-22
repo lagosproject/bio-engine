@@ -21,10 +21,39 @@ class PersistenceManager:
     """
     def __init__(self, app_name: str = "ps-analyzer"):
         self.app_name = app_name
-        self.base_dir = self._get_user_data_dir()
+        self.base_dir = self._resolve_base_dir()
         self._ensure_dirs()
 
-    def _get_user_data_dir(self) -> pathlib.Path:
+    def _resolve_base_dir(self) -> pathlib.Path:
+        # 1. Environment variable override (highest priority)
+        if env_dir := os.environ.get("BIO_DATA_DIR"):
+            return pathlib.Path(env_dir)
+
+        # 2. Check for portable mode
+        # We consider it portable if BIO_PORTABLE is set OR if a .portable file exists next to the exe
+        exe_dir = self._get_exe_dir()
+        is_portable = os.environ.get("BIO_PORTABLE") == "1"
+        
+        if not is_portable:
+            # Check for marker file in the executable directory or its parent (if in 'binaries' subfolder)
+            if (exe_dir / ".portable").exists() or (exe_dir / "portable").exists():
+                is_portable = True
+            elif exe_dir.name == "binaries" and ((exe_dir.parent / ".portable").exists() or (exe_dir.parent / "portable").exists()):
+                is_portable = True
+
+        if is_portable:
+            if exe_dir.name == "binaries":
+                return exe_dir.parent / "data"
+            return exe_dir / "data"
+
+        # 3. AppImage specific handling
+        if sys.platform == "linux" and "APPIMAGE" in os.environ:
+            appimage_dir = pathlib.Path(os.environ["APPIMAGE"]).parent
+            # Only use it if it's writable, otherwise fall back to standard
+            if os.access(appimage_dir, os.W_OK):
+                return appimage_dir / f"{self.app_name}-data"
+
+        # 4. Standard OS-specific locations
         home = pathlib.Path.home()
         if sys.platform == "win32":
             return home / "AppData" / "Roaming" / self.app_name
@@ -32,6 +61,11 @@ class PersistenceManager:
             return home / "Library" / "Application Support" / self.app_name
         else:  # Linux/Unix
             return home / ".local" / "share" / self.app_name
+
+    def _get_exe_dir(self) -> pathlib.Path:
+        if getattr(sys, 'frozen', False):
+            return pathlib.Path(sys.executable).parent
+        return pathlib.Path(__file__).parent.parent
 
     def _ensure_dirs(self):
         dirs = [
@@ -44,10 +78,13 @@ class PersistenceManager:
                 os.makedirs(d, exist_ok=True)
             except OSError as e:
                 logger.error(f"Could not create directory {d}: {e}")
-                # Fallback to local 'data' directory if permission denied
+                # Fallback to local 'data' directory relative to the current file
                 fallback = pathlib.Path(__file__).parent.parent / "data" / os.path.basename(d)
-                os.makedirs(fallback, exist_ok=True)
-                logger.warning(f"Falling back to {fallback}")
+                try:
+                    os.makedirs(fallback, exist_ok=True)
+                    logger.warning(f"Falling back to {fallback}")
+                except Exception as ex:
+                    logger.critical(f"Failed to create even fallback directory: {ex}")
 
     def get_jobs_dir(self) -> str:
         return str(self.base_dir / "jobs")
