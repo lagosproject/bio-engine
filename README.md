@@ -35,6 +35,25 @@ Or simply:
 python main.py
 ```
 
+## Docker Deployment
+
+The Bio-Engine can be deployed as a standalone API server using Docker. This is ideal for centralized deployments where multiple PS Analyzer instances (or the web-based version) connect to a shared analysis backend.
+
+### Running with Docker
+
+1.  **Build the image**:
+    ```bash
+    docker build -t bio-engine -f Dockerfile.server .
+    ```
+2.  **Run the container**:
+    ```bash
+    docker run -p 8000:8000 -v $(pwd)/data:/app/data bio-engine
+    ```
+
+### Purpose of Dockerfiles
+- **`Dockerfile.server`**: A production-ready image that includes all necessary bioinformatics tools (`samtools`, `tabix`, `tracy`) and runs the FastAPI server.
+- **`Dockerfile`**: Used for building the static binaries (sidecars) for the Tauri desktop application.
+
 ## API Documentation
 Once the server is running, the Swagger UI is available at `http://127.0.0.1:8000/docs`, where you can explore and interact with the endpoints.
 

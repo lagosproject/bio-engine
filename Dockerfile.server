@@ -1,0 +1,36 @@
+# Production Dockerfile for Bio-Engine Server
+FROM python:3.10-slim-bullseye
+
+# Install bioinformatics tools and system dependencies
+RUN apt-get update && apt-get install -y \
+    samtools \
+    tabix \
+    curl \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Tracy
+RUN curl -L https://github.com/gear-genomics/tracy/releases/download/v0.7.3/tracy-0.7.3-x86_64-linux -o /usr/local/bin/tracy && \
+    chmod +x /usr/local/bin/tracy
+
+WORKDIR /app
+
+# Copy requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application
+COPY . .
+
+# Create directory for persistent data
+RUN mkdir -p /app/data
+
+# Environment variables for the sidecar paths
+ENV BIO_SAMTOOLS_PATH=samtools
+ENV BIO_BGZIP_PATH=bgzip
+ENV TRACY_PATH=tracy
+
+EXPOSE 8000
+
+# Run the FastAPI server
+CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "8000", "--data-dir", "/app/data"]
