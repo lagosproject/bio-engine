@@ -71,7 +71,8 @@ class PersistenceManager:
         dirs = [
             self.get_jobs_dir(),
             self.get_logs_dir(),
-            self.get_cache_dir()
+            self.get_cache_dir(),
+            self.get_uploads_dir()
         ]
         for d in dirs:
             try:
@@ -94,6 +95,9 @@ class PersistenceManager:
 
     def get_cache_dir(self) -> str:
         return str(self.base_dir / "ncbi_cache")
+
+    def get_uploads_dir(self) -> str:
+        return str(self.base_dir / "uploads")
 
     def get_log_file(self, filename: str = "bio-engine.log") -> str:
         return os.path.join(self.get_logs_dir(), filename)

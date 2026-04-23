@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     cache_dir: str = os.getenv("BIO_CACHE_DIR", _persistence.get_cache_dir())
     jobs_dir: str = _persistence.get_jobs_dir()
     logs_dir: str = _persistence.get_logs_dir()
+    uploads_dir: str = _persistence.get_uploads_dir()
 
     # Tracy
     tracy_path: str = os.getenv("TRACY_PATH", "tracy")

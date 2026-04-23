@@ -197,11 +197,13 @@ if __name__ == "__main__":
         settings.logs_dir = os.path.join(data_dir, "logs")
         settings.jobs_dir = os.path.join(data_dir, "jobs")
         settings.cache_dir = os.path.join(data_dir, "ncbi_cache")
+        settings.uploads_dir = os.path.join(data_dir, "uploads")
         
         # Ensure directories exist
         os.makedirs(settings.logs_dir, exist_ok=True)
         os.makedirs(settings.jobs_dir, exist_ok=True)
         os.makedirs(settings.cache_dir, exist_ok=True)
+        os.makedirs(settings.uploads_dir, exist_ok=True)
         
         # Re-initialize logging with new path
         setup_logging()

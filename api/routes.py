@@ -10,7 +10,8 @@ and biological database communication (e.g., fetching references, HGVS variants)
 import logging
 import os
 
-from fastapi import APIRouter, BackgroundTasks
+import shutil
+from fastapi import APIRouter, BackgroundTasks, File, UploadFile
 
 from core.exceptions import BioEngineError
 from data.models import (
@@ -104,6 +105,26 @@ def configure_proxy(request: ProxyConfigRequest):
         "http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"), 
         "https_proxy": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     }
+
+@router.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Uploads a file to the server's local storage.
+    Returns the absolute path to the uploaded file.
+    """
+    from core.config import settings
+    
+    file_path = os.path.join(settings.uploads_dir, file.filename)
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        logger.info(f"File uploaded successfully: {file_path}")
+        return {"path": file_path}
+    except Exception as e:
+        logger.error(f"Failed to upload file {file.filename}: {e}")
+        raise BioEngineError(f"Failed to upload file: {e}")
 
 @router.get("/check-reference")
 def check_reference(id: str):
