@@ -7,17 +7,20 @@ RUN apt-get update && apt-get install -y \
     tabix \
     curl \
     procps \
+    gcc \
+    libpq-dev \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Tracy
-RUN curl -L https://github.com/gear-genomics/tracy/releases/download/v0.7.3/tracy-0.7.3-x86_64-linux -o /usr/local/bin/tracy && \
-    chmod +x /usr/local/bin/tracy
+# Download and install Tracy (bio-informatics tool)
+RUN curl -L https://github.com/gear-genomics/tracy/releases/download/v0.8.9/tracy-v0.8.9-linux-amd64 -o /usr/local/bin/tracy \
+    && chmod +x /usr/local/bin/tracy
 
 WORKDIR /app
 
 # Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir python-multipart
 
 # Copy the rest of the application
 COPY . .
@@ -33,4 +36,4 @@ ENV TRACY_PATH=tracy
 EXPOSE 8000
 
 # Run the FastAPI server
-CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "8000", "--data-dir", "/app/data"]
+CMD ["python", "main.py", "--host", "0.0.0.0", "--port", "8000", "--data-dir", "/app/storage"]
