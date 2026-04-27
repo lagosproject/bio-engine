@@ -236,6 +236,15 @@ class JobManager:
                     return job
         return None
 
+    def update_variant_status(self, job_id: str, variant_key: str, status: Any) -> Job | None:
+        job = self.get_job(job_id)
+        if job:
+            job.variant_statuses[variant_key] = status
+            job.updated_at = datetime.now().isoformat()
+            self._save_job(job)
+            logger.info(f"Updated status for variant {variant_key} in job {job_id} to {status}")
+            return job
+        return None
 
     def delete_job(self, job_id: str) -> bool:
         job_path = self._get_job_path(job_id)
@@ -375,7 +384,7 @@ class JobManager:
         # Save JSON
         json_path = export_dir / f"{job.id}.json"
         with open(json_path, "wb") as f:
-            f.write(orjson.dumps(job_copy.model_dump(), option=orjson.OPT_INDENT_2))
+            f.write(orjson.dumps(job_copy.copy(deep=True).dict(), option=orjson.OPT_INDENT_2))
             
         return str(export_dir)
 
@@ -433,4 +442,3 @@ class JobManager:
         self._save_job(job)
         logger.info(f"Imported job {job.id} from {source_folder}")
         return job
-

@@ -61,6 +61,12 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class VariantStatus(str, Enum):
+    REVIEWED = "reviewed"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    NONE = "none"
+
 class JobReference(BaseModel):
     type: str  # "ncbi" or "file"
     value: str # accession code or file path
@@ -112,6 +118,7 @@ class Job(BaseModel):
     comments: dict[str, list[Comment]] = Field(default_factory=dict)
     hgvs_alternatives: dict[str, list[str]] = Field(default_factory=dict)
     vep_annotations: dict[str, VariantAnnotation] = Field(default_factory=dict)
+    variant_statuses: dict[str, VariantStatus] = Field(default_factory=dict)
 
 class CreateJobRequest(BaseModel):
     name: str
@@ -135,6 +142,10 @@ class AddCommentRequest(BaseModel):
     variant_key: str
     text: str
     author: str
+
+class UpdateVariantStatusRequest(BaseModel):
+    variant_key: str
+    status: VariantStatus
 
 class AddHGVSAlternativesRequest(BaseModel):
     principal_hgvs: str

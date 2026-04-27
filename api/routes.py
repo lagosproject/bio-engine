@@ -26,6 +26,7 @@ from data.models import (
     ShareJobRequest,
     UpdateJobRequest,
     ProxyConfigRequest,
+    UpdateVariantStatusRequest,
 )
 from services import aligner as aligner_service
 from services import reference as ref_service
@@ -57,6 +58,20 @@ def add_comment(job_id: str, request: AddCommentRequest):
     )
     if not job:
         raise BioEngineError(f"Job {job_id} not found or failed to add comment")
+    return job
+
+@router.put("/jobs/{job_id}/variant-status", response_model=Job)
+def update_variant_status(job_id: str, request: UpdateVariantStatusRequest):
+    """
+    Updates the status (reviewed, approved, rejected) of a specific variant.
+    """
+    job = job_manager.update_variant_status(
+        job_id,
+        variant_key=request.variant_key,
+        status=request.status
+    )
+    if not job:
+        raise BioEngineError(f"Job {job_id} not found or failed to update variant status")
     return job
 
 @router.delete("/jobs/{job_id}/comments/{variant_key}/{comment_id}", response_model=Job)
