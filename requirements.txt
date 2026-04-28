@@ -156,3 +156,4 @@ yoyo-migrations==9.0.0
     # via biocommons-seqrepo
 zipp==3.23.0
     # via importlib-metadata
+redis==5.0.1

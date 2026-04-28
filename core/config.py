@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     json_logs: bool = True
 
+    # Redis Cache
+    redis_url: str | None = os.getenv("BIO_REDIS_URL")
+
     model_config = SettingsConfigDict(env_prefix="BIO_")
 
 settings = Settings()

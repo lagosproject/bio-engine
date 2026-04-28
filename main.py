@@ -7,6 +7,9 @@ It initializes the FastAPI application, sets up logging, CORS, and
 global exception handlers, and configures Uvicorn for serving the API.
 """
 
+from core.logging import setup_logging
+setup_logging()
+
 import argparse
 import logging
 import multiprocessing
@@ -22,15 +25,7 @@ from fastapi.responses import JSONResponse
 from api.routes import router
 from core.config import settings
 from core.exceptions import BioEngineError
-from core.logging import setup_logging
 
-# Handle PyInstaller one-file mode: Add temp dir to PATH so tracy is found
-if getattr(sys, 'frozen', False):
-    bundle_dir = sys._MEIPASS
-    os.environ["PATH"] = bundle_dir + os.pathsep + os.environ["PATH"]
-
-# Initialize Logging
-setup_logging()
 logger = logging.getLogger(__name__)
 
 if getattr(sys, 'frozen', False):

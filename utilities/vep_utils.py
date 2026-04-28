@@ -382,11 +382,15 @@ class DockerVEPAnnotator(BaseVEPAnnotator):
 
         return self._structure_results(results)
 
+from core.cache import cache
+
 class VEPAnnotator:
     """
     Dispatcher class for VEP annotation.
     """
     def __init__(self, mode: str = "online", assembly: str = "GRCh38", vep_path: str | None = None, vep_data: str | None = None):
+        self.mode = mode
+        self.assembly = assembly
         self.engine: BaseVEPAnnotator
         if mode == "local":
             self.engine = LocalVEPAnnotator(assembly, vep_path or "vep", vep_data)
@@ -396,4 +400,32 @@ class VEPAnnotator:
             self.engine = OnlineVEPAnnotator(assembly)
 
     def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
-        return self.engine.get_annotations(hgvs_variants)
+        if not hgvs_variants:
+            return {}
+
+        results = {}
+        missing = []
+
+        # 1. Check Global Cache
+        for variant in hgvs_variants:
+            # We include assembly in the key to prevent conflicts between GRCh37 and GRCh38
+            cache_key = f"vep:{self.assembly}:{variant}"
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                results[variant] = cached_data
+            else:
+                missing.append(variant)
+
+        if not missing:
+            return results
+
+        # 2. Fetch missing from the selected engine
+        new_annotations = self.engine.get_annotations(missing)
+
+        # 3. Store new results in cache
+        for variant, data in new_annotations.items():
+            cache_key = f"vep:{self.assembly}:{variant}"
+            cache.set(cache_key, data)
+            results[variant] = data
+
+        return results

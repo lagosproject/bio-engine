@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 from services.reference import get_lrg_mapping
 from core.proxy_manager import proxy_manager
 
+from core.cache import cache
 logger = logging.getLogger(__name__)
 
 class EnsemblHGVS:
@@ -53,42 +54,50 @@ class EnsemblHGVS:
         if not hgvs_variants:
             return {}
 
-        # Pre-mapping: Detect NG_ and swap for LRG_ if available
-        # This is a surgical fix because Ensembl rejects NG_ with 400 errors.
-        id_map = {} # original -> used
+        final_results = {}
         variants_to_lookup = []
+        id_map = {} # original -> used (for NG_ mapping)
 
+        # 1. Check Global Cache First
         for v in hgvs_variants:
-            ac_match = v.split(':')[0] if ':' in v else v
-            if ac_match.startswith("NG_"):
-                lrg = get_lrg_mapping(ac_match)
-                if lrg:
-                    new_v = v.replace(ac_match, lrg)
-                    id_map[new_v] = v
-                    variants_to_lookup.append(new_v)
+            cache_key = f"ensembl:equivalents:{self.assembly}:{v}"
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                final_results[v] = cached_data
+            else:
+                # Pre-mapping: Detect NG_ and swap for LRG_ if available
+                ac_match = v.split(':')[0] if ':' in v else v
+                if ac_match.startswith("NG_"):
+                    lrg = get_lrg_mapping(ac_match)
+                    if lrg:
+                        new_v = v.replace(ac_match, lrg)
+                        id_map[new_v] = v
+                        variants_to_lookup.append(new_v)
+                    else:
+                        variants_to_lookup.append(v)
                 else:
                     variants_to_lookup.append(v)
-            else:
-                variants_to_lookup.append(v)
 
-        final_results = {}
+        if not variants_to_lookup:
+            return final_results
+
+        # 2. Fetch missing from Ensembl
         for i in range(0, len(variants_to_lookup), chunk_size):
             chunk = variants_to_lookup[i:i + chunk_size]
             chunk_results = self._get_chunk_results(chunk)
             
-            # Post-mapping: Restore original NG_ identifiers
-            remapped_chunk_results = {}
             for lookup_v, alternatives in chunk_results.items():
                 original_v = id_map.get(lookup_v, lookup_v)
-                remapped_chunk_results[original_v] = alternatives
+                final_results[original_v] = alternatives
+                
+                # Store in Redis
+                cache_key = f"ensembl:equivalents:{self.assembly}:{original_v}"
+                cache.set(cache_key, alternatives)
 
-            # Ensure every input variant from the ORIGINAL list has at least itself
-            current_chunk_originals = hgvs_variants[i:i + chunk_size]
-            for v in current_chunk_originals:
-                if v not in remapped_chunk_results or not remapped_chunk_results[v]:
-                    remapped_chunk_results[v] = [v]
-
-            final_results.update(remapped_chunk_results)
+        # 3. Ensure every input variant has at least itself if lookup failed
+        for v in hgvs_variants:
+            if v not in final_results or not final_results[v]:
+                final_results[v] = [v]
         
         return final_results
 
