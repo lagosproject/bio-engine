@@ -27,11 +27,23 @@ from data.models import (
     UpdateJobRequest,
     ProxyConfigRequest,
     UpdateVariantStatusRequest,
+    ApproveVariantRequest,
+    HotspotPoint,
 )
 from services import aligner as aligner_service
 from services import reference as ref_service
 from services.job_manager import JobManager
 from tasks.worker import annotate_hgvs_background, process_job_background
+
+from sqlalchemy.orm import Session
+from sqlalchemy import func, Integer, cast
+from core.database import get_db, engine, Base
+from data.models_db import ApprovedVariant
+from fastapi import Depends
+from core.cache import cache
+
+# Create tables on startup (simple approach for now)
+Base.metadata.create_all(bind=engine)
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +73,11 @@ def add_comment(job_id: str, request: AddCommentRequest):
     return job
 
 @router.put("/jobs/{job_id}/variant-status", response_model=Job)
-def update_variant_status(job_id: str, request: UpdateVariantStatusRequest):
+def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: Session = Depends(get_db)):
     """
-    Updates the status (reviewed, approved, rejected) of a specific variant.
+    Updates the status of a specific variant and synchronizes the global hotspots map.
     """
+    # 1. Update the job file status
     job = job_manager.update_variant_status(
         job_id,
         variant_key=request.variant_key,
@@ -72,6 +85,114 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest):
     )
     if not job:
         raise BioEngineError(f"Job {job_id} not found or failed to update variant status")
+
+    # 2. Sync with approved_variants DB
+    # The variant_key can be "patient_id:index" or just "position" (for grouped variants)
+    patient_id, variant_id = request.variant_key.split(':') if ':' in request.variant_key else (None, request.variant_key)
+    
+    # Extract variant details from results
+    target_variant = None
+    if job.results:
+        for res in job.results:
+            # If patient_id is specified, only look in that patient's results
+            if patient_id and res.get("id") != patient_id:
+                continue
+                
+            v_data = res.get("variants", {})
+            rows, cols = v_data.get("rows", []), v_data.get("columns", [])
+            col_map = {col.upper(): i for i, col in enumerate(cols)}
+            
+            try:
+                # If variant_id is a row index (usually when patient_id is present)
+                if patient_id:
+                    v_idx = int(variant_id)
+                    if v_idx < len(rows):
+                        row = rows[v_idx]
+                        # Priority: Extract both Chr and Pos from HGVS equivalents (Absolute Genomic Coordinates)
+                        hgvs_key = row[col_map["HGVS"]] if "HGVS" in col_map else None
+                        if hgvs_key:
+                            alternatives = job.hgvs_alternatives.get(hgvs_key, [])
+                            logger.info(f"Sync: Found {len(alternatives)} alternatives for {hgvs_key} (patient {patient_id})")
+                            for alt in alternatives:
+                                import re
+                                match = re.search(r"NC_0000(\d{2}).*?g\.(\d+)", alt)
+                                if match:
+                                    target_variant = {
+                                        "chromosome": str(int(match.group(1))),
+                                        "position": int(match.group(2)),
+                                        "ref": row[col_map.get("REF", 0)],
+                                        "alt": row[col_map.get("ALT", 0)],
+                                        "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
+                                    }
+                                    logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
+                                    break
+                        
+                        if not target_variant:
+                            logger.warning(f"Variant {request.variant_key} skipped: HGVS '{hgvs_key}' has {len(job.hgvs_alternatives.get(hgvs_key, []))} alternatives.")
+                        break
+                else:
+                    # If variant_id is a position string (grouped variant)
+                    target_pos = int(variant_id)
+                    pos_idx = col_map.get("POS", 0)
+                    for row in rows:
+                        if int(row[pos_idx]) == target_pos:
+                            # Extract both Chr and Pos from HGVS (Absolute Genomic Coordinates)
+                            hgvs_key = row[col_map["HGVS"]] if "HGVS" in col_map else None
+                            if hgvs_key:
+                                alternatives = job.hgvs_alternatives.get(hgvs_key, [])
+                                logger.info(f"Sync: Found {len(alternatives)} alternatives for {hgvs_key}")
+                                for alt in alternatives:
+                                    import re
+                                    match = re.search(r"NC_0000(\d{2}).*?g\.(\d+)", alt)
+                                    if match:
+                                        target_variant = {
+                                            "chromosome": str(int(match.group(1))),
+                                            "position": int(match.group(2)),
+                                            "ref": row[col_map.get("REF", 0)],
+                                            "alt": row[col_map.get("ALT", 0)],
+                                            "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
+                                        }
+                                        logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
+                                        break
+                            
+                            if target_variant: break
+                    
+                    if not target_variant:
+                        logger.warning(f"Grouped variant at pos {target_pos} in job {job_id} skipped: HGVS key '{hgvs_key}' has {len(job.hgvs_alternatives.get(hgvs_key, []))} alternatives.")
+                    break
+            except: continue
+
+    if target_variant:
+        if request.status == "approved":
+            # Add to DB if missing
+            exists = db.query(ApprovedVariant).filter(
+                ApprovedVariant.job_id == job_id,
+                ApprovedVariant.chromosome == target_variant["chromosome"],
+                ApprovedVariant.position == target_variant["position"]
+            ).first()
+            if not exists:
+                db_variant = ApprovedVariant(
+                    chromosome=target_variant["chromosome"],
+                    position=target_variant["position"],
+                    ref_allele=target_variant["ref"],
+                    alt_allele=target_variant["alt"],
+                    gene=target_variant["gene"],
+                    approved_by="Dashboard",
+                    job_id=job_id,
+                    patient_id=patient_id,
+                    assembly=job.hgvs_config.assembly if job.hgvs_config else "GRCh38"
+                )
+                db.add(db_variant)
+        else:
+            # Remove from DB if status changed from approved to anything else
+            db.query(ApprovedVariant).filter(
+                ApprovedVariant.job_id == job_id,
+                ApprovedVariant.chromosome == target_variant["chromosome"],
+                ApprovedVariant.position == target_variant["position"]
+            ).delete()
+        
+        db.commit()
+
     return job
 
 @router.delete("/jobs/{job_id}/comments/{variant_key}/{comment_id}", response_model=Job)
@@ -226,13 +347,15 @@ def get_job(job_id: str):
     return job
 
 @router.delete("/jobs/{job_id}")
-def delete_job(job_id: str):
+def delete_job(job_id: str, db: Session = Depends(get_db)):
     """
-    Removes a job from the persistent storage.
-    
-    Args:
-        job_id (str): The ID of the job to delete.
+    Removes a job from the persistent storage and cleans up associated approved variants.
     """
+    # 1. Cleanup approved variants from DB
+    db.query(ApprovedVariant).filter(ApprovedVariant.job_id == job_id).delete()
+    db.commit()
+
+    # 2. Delete job files
     success = job_manager.delete_job(job_id)
     if not success:
         raise BioEngineError(f"Failed to delete job {job_id} (or not found)")
@@ -376,13 +499,135 @@ def share_job(job_id: str, request: ShareJobRequest):
         raise BioEngineError(f"Failed to export job {job_id}: {e}")
 
 @router.post("/jobs/import", response_model=Job)
-def import_job(request: ImportJobRequest):
+def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
     """
-    Imports a shared job from a local directory back into the engine.
+    Imports a shared job and synchronizes its approved variants to the global database.
     """
     try:
         job = job_manager.import_job(request.source_folder)
+        
+        # Sync approved variants from the imported job
+        for variant_key, status in job.variant_statuses.items():
+            if status == "approved":
+                # Find the variant in results to get coordinates
+                # variant_key format is usually "patient_id:variant_id" or similar
+                # We need to find the matching entry in job.results
+                patient_id, variant_idx_str = variant_key.split(':') if ':' in variant_key else (None, variant_key)
+                
+                # Search for the variant in the results
+                target_variant = None
+                if job.results:
+                    for res in job.results:
+                        if res.get("id") == patient_id:
+                            variants_data = res.get("variants", {})
+                            rows = variants_data.get("rows", [])
+                            cols = variants_data.get("columns", [])
+                            try:
+                                v_idx = int(variant_idx_str)
+                                if v_idx < len(rows):
+                                    row = rows[v_idx]
+                                    # Map columns
+                                    col_map = {col.upper(): i for i, col in enumerate(cols)}
+                                    
+                                    # Ensure we have a chromosome name
+                                    chr_name = row[col_map["CHR"]] if "CHR" in col_map else None
+                                    if not chr_name:
+                                        continue
+
+                                    target_variant = {
+                                        "chromosome": chr_name,
+                                        "position": int(row[col_map.get("POS", 0)]),
+                                        "ref_allele": row[col_map.get("REF", 0)],
+                                        "alt_allele": row[col_map.get("ALT", 0)],
+                                        "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
+                                    }
+                                    break
+                            except:
+                                continue
+                
+                if target_variant:
+                    # Check if already exists to avoid duplicates
+                    exists = db.query(ApprovedVariant).filter(
+                        ApprovedVariant.job_id == job.id,
+                        ApprovedVariant.chromosome == target_variant["chromosome"],
+                        ApprovedVariant.position == target_variant["position"]
+                    ).first()
+                    
+                    if not exists:
+                        db_variant = ApprovedVariant(
+                            chromosome=target_variant["chromosome"],
+                            position=target_variant["position"],
+                            ref_allele=target_variant["ref_allele"],
+                            alt_allele=target_variant["alt_allele"],
+                            gene=target_variant["gene"],
+                            approved_by="Imported",
+                            job_id=job.id,
+                            patient_id=patient_id,
+                            assembly=job.hgvs_config.assembly if job.hgvs_config else "GRCh38"
+                        )
+                        db.add(db_variant)
+        
+        db.commit()
         return job
     except Exception as e:
         logger.error(f"Failed to import job from {request.source_folder}: {e}")
+        db.rollback()
         raise BioEngineError(f"Failed to import job: {e}")
+
+@router.post("/variants/approve")
+def approve_variant(request: ApproveVariantRequest, db: Session = Depends(get_db)):
+    """
+    Saves a variant to the approved variants database.
+    """
+    db_variant = ApprovedVariant(
+        chromosome=request.chromosome,
+        position=request.position,
+        ref_allele=request.ref_allele,
+        alt_allele=request.alt_allele,
+        gene=request.gene,
+        approved_by=request.approved_by,
+        job_id=request.job_id,
+        patient_id=request.patient_id,
+        assembly=request.assembly
+    )
+    db.add(db_variant)
+    db.commit()
+    db.refresh(db_variant)
+    return {"status": "success", "id": db_variant.id}
+
+@router.get("/variants/hotspots", response_model=list[HotspotPoint])
+def get_hotspots(bin_size: int = 1000000, assembly: str = "GRCh38", db: Session = Depends(get_db)):
+    """
+    Returns aggregated variant counts (hotspots) grouped by chromosome and genomic bins.
+    """
+    # Group by chromosome and (position / bin_size)
+    query = db.query(
+        ApprovedVariant.chromosome,
+        cast(ApprovedVariant.position / bin_size, Integer).label("bin"),
+        func.count(ApprovedVariant.id).label("count")
+    ).filter(ApprovedVariant.assembly == assembly).group_by(
+        ApprovedVariant.chromosome,
+        "bin"
+    )
+
+    results = []
+    for chromosome, bin_index, count in query.all():
+        results.append(HotspotPoint(
+            chr=chromosome,
+            start=bin_index * bin_size,
+            stop=(bin_index + 1) * bin_size,
+            count=count
+        ))
+    
+    return results
+
+@router.post("/cache/flush")
+def flush_cache():
+    """
+    Clears the entire Redis cache.
+    """
+    success = cache.flush()
+    if success:
+        return {"status": "success", "message": "Cache cleared successfully"}
+    else:
+        return {"status": "error", "message": "Failed to clear cache or Redis not available"}, 500

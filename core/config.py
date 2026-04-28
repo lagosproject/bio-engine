@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # Redis Cache
     redis_url: str | None = os.getenv("BIO_REDIS_URL")
 
+    # Database
+    database_url: str = os.getenv("BIO_DATABASE_URL", f"sqlite:///{_persistence.base_dir}/bio-engine.db")
+
     model_config = SettingsConfigDict(env_prefix="BIO_")
 
 settings = Settings()

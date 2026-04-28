@@ -44,5 +44,17 @@ class CacheManager:
         except Exception as e:
             logger.error(f"Redis SET error for {key}: {e}")
 
+    def flush(self):
+        """Clear all keys from the cache."""
+        if not self.client:
+            return False
+        try:
+            self.client.flushdb()
+            logger.info("Redis cache flushed successfully.")
+            return True
+        except Exception as e:
+            logger.error(f"Redis FLUSH error: {e}")
+            return False
+
 # Global singleton instance
 cache = CacheManager()

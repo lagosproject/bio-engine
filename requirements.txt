@@ -157,3 +157,4 @@ yoyo-migrations==9.0.0
 zipp==3.23.0
     # via importlib-metadata
 redis==5.0.1
+sqlalchemy==2.0.38

@@ -263,3 +263,20 @@ class HGVSRequest(BaseModel):
 class ProxyConfigRequest(BaseModel):
     http_proxy: str | None = None
     https_proxy: str | None = None
+
+class ApproveVariantRequest(BaseModel):
+    chromosome: str
+    position: int
+    ref_allele: str
+    alt_allele: str
+    gene: str | None = None
+    approved_by: str
+    job_id: str | None = None
+    patient_id: str | None = None
+    assembly: str = "GRCh38"
+
+class HotspotPoint(BaseModel):
+    chr: str
+    start: int
+    stop: int
+    count: int
