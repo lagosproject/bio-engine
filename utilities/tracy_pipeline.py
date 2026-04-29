@@ -67,6 +67,21 @@ class TracyPipeline:
                     msg = f"Auto-indexing failed: {index_err}"
                     logger.error(msg)
                     raise AlignmentError(msg)
+            elif "trim size is larger than the trace" in error_msg:
+                logger.warning(f"Trace {ab1} is too short for default trim values (L:{config.trimLeft}, R:{config.trimRight}). Retrying with minimal trim...")
+                try:
+                    # Create a copy with reduced trim
+                    new_config = config.model_copy()
+                    new_config.trimLeft = 10
+                    new_config.trimRight = 10
+                    return self._execute_decompose(ref, ab1, prefix, new_config, hgvs_config)
+                except Exception as retry_err:
+                    # If it still fails, try with 0 trim
+                    logger.warning(f"Retry with minimal trim failed: {retry_err}. Attempting with zero trim...")
+                    new_config = config.model_copy()
+                    new_config.trimLeft = 0
+                    new_config.trimRight = 0
+                    return self._execute_decompose(ref, ab1, prefix, new_config, hgvs_config)
             else:
                 logger.error(f"Tracy decompose failed: {error_msg}")
                 raise AlignmentError(f"Tracy decompose failed: {error_msg}")

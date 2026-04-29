@@ -105,7 +105,7 @@ class EnsemblHGVS:
         endpoint = f"{self.base_url}/variant_recoder/human"
         payload = {
             "ids": chunk,
-            "fields": "hgvsg,hgvsc,hgvsp"
+            "fields": "hgvsg,hgvsc,hgvsp,spdi"
         }
 
         results_map = {}
@@ -134,7 +134,7 @@ class EnsemblHGVS:
                     # Always include the input itself if it's a valid notation
                     equivalents.add(input_id)
 
-                    for field in ["hgvsg", "hgvsc", "hgvsp"]:
+                    for field in ["hgvsg", "hgvsc", "hgvsp", "spdi"]:
                         vals = info.get(field, [])
                         if isinstance(vals, list):
                             equivalents.update(vals)

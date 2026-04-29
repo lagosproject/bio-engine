@@ -10,7 +10,7 @@ and biological database communication (e.g., fetching references, HGVS variants)
 import logging
 import os
 
-import shutil
+import re
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile
 
 from core.exceptions import BioEngineError
@@ -98,11 +98,15 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
             if patient_id and res.get("id") != patient_id:
                 continue
                 
-            v_data = res.get("variants", {})
+            alignment_data = res.get("alignment", {})
+            v_data = alignment_data.get("variants", {})
             rows, cols = v_data.get("rows", []), v_data.get("columns", [])
             col_map = {col.upper(): i for i, col in enumerate(cols)}
             
             try:
+                # 1. Map columns
+                col_map = {col.upper(): i for i, col in enumerate(cols)}
+                
                 # If variant_id is a row index (usually when patient_id is present)
                 if patient_id:
                     v_idx = int(variant_id)
@@ -111,24 +115,67 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                         # Priority: Extract both Chr and Pos from HGVS equivalents (Absolute Genomic Coordinates)
                         hgvs_key = row[col_map["HGVS"]] if "HGVS" in col_map else None
                         if hgvs_key:
-                            alternatives = job.hgvs_alternatives.get(hgvs_key, [])
-                            logger.info(f"Sync: Found {len(alternatives)} alternatives for {hgvs_key} (patient {patient_id})")
-                            for alt in alternatives:
-                                import re
-                                match = re.search(r"NC_0000(\d{2}).*?g\.(\d+)", alt)
+                            # Try to fetch alternatives on the fly if missing or not genomic
+                            alts = job.hgvs_alternatives.get(hgvs_key, [])
+                            has_genomic = any(re.search(r"(?:NC_0000\d{2}|\d{1,2}|X|Y|MT)[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
+                            
+                            if not has_genomic:
+                                try:
+                                    from utilities.ensembl_hgvs import EnsemblHGVS
+                                    logger.info(f"Sync: Fetching genomic alternatives for {hgvs_key} on-the-fly...")
+                                    ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly if job.hgvs_config else "GRCh38")
+                                    results = ensembl.get_equivalents_batch([hgvs_key])
+                                    new_alts = results.get(hgvs_key, [])
+                                    if new_alts:
+                                        alts = list(set(alts + new_alts))
+                                        job_manager.add_job_hgvs_alternatives(job_id, hgvs_key, alts)
+                                except Exception as e:
+                                    logger.warning(f"On-the-fly HGVS fetch failed for {hgvs_key}: {e}")
+                            
+                            # Candidates: the hgvs_key itself + its alternatives
+                            candidates = [hgvs_key] + alts
+                            logger.info(f"Sync: Checking {len(candidates)} HGVS/SPDI candidates for {hgvs_key} (patient {patient_id})")
+                            for alt in candidates:
+                            # Match both NC_0000XX.X:g.XXXX (HGVS) and NC_0000XX.X:XXXX:A:T (SPDI)
+                                # And chromosome numbers like 19:g.XXXX or 19:XXXX:A:T
+                                match = re.search(r"(?:NC_0000(\d{2})|(\d{1,2}|X|Y|MT))[:.](?:g\.)?(\d+)", alt)
                                 if match:
+                                    chrom = match.group(1) or match.group(2)
+                                    if chrom.isdigit(): chrom = str(int(chrom))
+                                    
+                                    pos = int(match.group(3))
+                                    # SPDI is 0-based, HGVS is 1-based.
+                                    # SPDI usually looks like Ac:Pos:Ref:Alt (3 colons)
+                                    # HGVS looks like Ac:g.PosRef>Alt
+                                    if ":g." not in alt and alt.count(":") >= 2:
+                                        pos += 1 # Normalize SPDI 0-based to 1-based
+                                    
                                     target_variant = {
-                                        "chromosome": str(int(match.group(1))),
-                                        "position": int(match.group(2)),
+                                        "chromosome": chrom,
+                                        "position": pos,
                                         "ref": row[col_map.get("REF", 0)],
                                         "alt": row[col_map.get("ALT", 0)],
                                         "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
                                     }
-                                    logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
+                                    logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']} from {alt}")
                                     break
                         
+                        # Fallback: if reference is genomic NC_...
+                        if not target_variant and job.reference.get("type") == "ncbi":
+                            ref_val = job.reference.get("value", "")
+                            match = re.search(r"NC_0000(\d{2})", ref_val)
+                            if match:
+                                target_variant = {
+                                    "chromosome": str(int(match.group(1))),
+                                    "position": int(row[col_map.get("POS", 0)]),
+                                    "ref": row[col_map.get("REF", 0)],
+                                    "alt": row[col_map.get("ALT", 0)],
+                                    "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
+                                }
+                                logger.info(f"Sync: Resolved via Job Reference to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
+
                         if not target_variant:
-                            logger.warning(f"Variant {request.variant_key} skipped: HGVS '{hgvs_key}' has {len(job.hgvs_alternatives.get(hgvs_key, []))} alternatives.")
+                            logger.warning(f"Variant {request.variant_key} skipped: Could not resolve genomic coordinates.")
                         break
                 else:
                     # If variant_id is a position string (grouped variant)
@@ -139,28 +186,67 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                             # Extract both Chr and Pos from HGVS (Absolute Genomic Coordinates)
                             hgvs_key = row[col_map["HGVS"]] if "HGVS" in col_map else None
                             if hgvs_key:
-                                alternatives = job.hgvs_alternatives.get(hgvs_key, [])
-                                logger.info(f"Sync: Found {len(alternatives)} alternatives for {hgvs_key}")
-                                for alt in alternatives:
-                                    import re
-                                    match = re.search(r"NC_0000(\d{2}).*?g\.(\d+)", alt)
+                                # Try to fetch alternatives on the fly if missing or not genomic
+                                alts = job.hgvs_alternatives.get(hgvs_key, [])
+                                has_genomic = any(re.search(r"(?:NC_0000\d{2}|\d{1,2}|X|Y|MT)[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
+
+                                if not has_genomic:
+                                    try:
+                                        from utilities.ensembl_hgvs import EnsemblHGVS
+                                        logger.info(f"Sync: Fetching genomic alternatives for {hgvs_key} on-the-fly...")
+                                        ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly if job.hgvs_config else "GRCh38")
+                                        results = ensembl.get_equivalents_batch([hgvs_key])
+                                        new_alts = results.get(hgvs_key, [])
+                                        if new_alts:
+                                            alts = list(set(alts + new_alts))
+                                            job_manager.add_job_hgvs_alternatives(job_id, hgvs_key, alts)
+                                    except Exception as e:
+                                        logger.warning(f"On-the-fly HGVS fetch failed for {hgvs_key}: {e}")
+
+                                candidates = [hgvs_key] + alts
+                                logger.info(f"Sync: Checking {len(candidates)} HGVS/SPDI candidates for {hgvs_key}")
+                                for alt in candidates:
+                                    match = re.search(r"(?:NC_0000(\d{2})|(\d{1,2}|X|Y|MT))[:.](?:g\.)?(\d+)", alt)
                                     if match:
+                                        chrom = match.group(1) or match.group(2)
+                                        if chrom.isdigit(): chrom = str(int(chrom))
+
+                                        pos = int(match.group(3))
+                                        if ":g." not in alt and alt.count(":") >= 2:
+                                            pos += 1 # Normalize SPDI 0-based to 1-based
+
                                         target_variant = {
-                                            "chromosome": str(int(match.group(1))),
-                                            "position": int(match.group(2)),
+                                            "chromosome": chrom,
+                                            "position": pos,
                                             "ref": row[col_map.get("REF", 0)],
                                             "alt": row[col_map.get("ALT", 0)],
                                             "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
                                         }
-                                        logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
+                                        logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']} from {alt}")
                                         break
                             
+                            # Fallback: if reference is genomic NC_...
+                            if not target_variant and job.reference.get("type") == "ncbi":
+                                ref_val = job.reference.get("value", "")
+                                match = re.search(r"NC_0000(\d{2})", ref_val)
+                                if match:
+                                    target_variant = {
+                                        "chromosome": str(int(match.group(1))),
+                                        "position": target_pos,
+                                        "ref": row[col_map.get("REF", 0)],
+                                        "alt": row[col_map.get("ALT", 0)],
+                                        "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
+                                    }
+                                    logger.info(f"Sync: Resolved via Job Reference to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
+
                             if target_variant: break
                     
                     if not target_variant:
-                        logger.warning(f"Grouped variant at pos {target_pos} in job {job_id} skipped: HGVS key '{hgvs_key}' has {len(job.hgvs_alternatives.get(hgvs_key, []))} alternatives.")
+                        logger.warning(f"Grouped variant at pos {target_pos} in job {job_id} skipped: Could not resolve genomic coordinates.")
                     break
-            except: continue
+            except Exception as e:
+                logger.error(f"Error resolving variant {request.variant_key}: {e}")
+                continue
 
     if target_variant:
         if request.status == "approved":
