@@ -214,19 +214,24 @@ def process_job_background(job_id: str):
                     if len(row) > h_idx and row[h_idx]:
                         unique_hgvs.add(row[h_idx])
 
-        # 2. Batch annotate equivalents using EnsemblHGVS
-        if unique_hgvs and job.hgvs_config and job.hgvs_config.transcript:
-            job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(unique_hgvs)} variants via Ensembl...")
+        # 2. Batch annotate equivalents using EnsemblHGVS (only those NOT already in job)
+        existing_alternatives = set(job.hgvs_alternatives.keys())
+        hgvs_to_lookup = list(unique_hgvs - existing_alternatives)
+
+        if hgvs_to_lookup and job.hgvs_config and job.hgvs_config.transcript:
+            job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(hgvs_to_lookup)} new variants via Ensembl...")
             try:
                 from utilities.ensembl_hgvs import EnsemblHGVS
                 ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
-                all_alternatives = ensembl.get_equivalents_batch(list(unique_hgvs))
+                all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
                 
                 # Bulk update alternatives to job
                 if all_alternatives:
                     job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
             except Exception as e:
                 logger.error(f"Batch HGVS annotation failed: {e}")
+        elif unique_hgvs and job.hgvs_config and job.hgvs_config.transcript:
+            logger.info("All variants already have alternatives in job.")
 
         # Update results in job manager before VEP processing to ensure we have the latest HGVS
         job_manager.update_job_results(job_id, results)
@@ -321,15 +326,22 @@ def annotate_hgvs_background(job_id: str):
             job_manager.update_job_status(job_id, JobStatus.COMPLETED)
             return
 
-        # 2. Batch annotate
-        all_alternatives = ensembl.get_equivalents_batch(list(unique_hgvs))
-        
-        # 3. Update job
-        if all_alternatives:
-            job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+        # 2. Batch annotate (only those NOT already in job)
+        existing_alternatives = set(job.hgvs_alternatives.keys())
+        hgvs_to_lookup = list(unique_hgvs - existing_alternatives)
+
+        if hgvs_to_lookup:
+            all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
+            
+            # 3. Update job
+            if all_alternatives:
+                job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+            
+            logger.info(f"Job {job_id} batch HGVS annotation completed for {len(hgvs_to_lookup)} variants")
+        else:
+            logger.info(f"Job {job_id} already has all HGVS alternatives")
             
         job_manager.update_job_status(job_id, JobStatus.COMPLETED)
-        logger.info(f"Job {job_id} batch HGVS annotation completed")
 
     except Exception as e:
         job_manager.update_job_status(job_id, JobStatus.FAILED)
