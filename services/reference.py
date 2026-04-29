@@ -34,38 +34,97 @@ def check_ncbi_reference_exists(accession: str) -> bool:
         logger.error(f"NCBI existence check failed for {accession}: {e}")
         return False
 
-def search_reference(query: str, retmax: int = 20) -> list[dict]:
-    """Searches NCBI Nucleotide for references matching the query (NCBI code or Gene Name)."""
-    try:
-        term = query
-        # If it doesn't look like an accession code, assume gene search
-        if not any(query.upper().startswith(prefix) for prefix in ["NM_", "NC_", "NG_", "NR_", "XM_", "XR_"]):
-            term = f"{query} AND human[Organism] AND refseq[Filter]"
+def search_reference(query: str, retmax: int = 20, assembly: str | None = None) -> list[dict]:
+    """
+    Searches for references matching the query.
+    Prioritizes NCBI for HG38 and Ensembl for HG19/GRCh37.
+    """
+    results = []
+    is_hg19 = assembly and assembly.upper() in ["GRCH37", "HG19"]
+    is_accession = any(query.upper().startswith(prefix) for prefix in ["NM_", "NC_", "NG_", "NR_", "XM_", "XR_"])
 
-        with Entrez.esearch(db="nucleotide", term=term, retmax=retmax) as handle:
-            record = Entrez.read(handle)
-            id_list = record.get("IdList", [])
+    def search_ensembl():
+        ensembl_results = []
+        try:
+            from core.proxy_manager import proxy_manager
+            base_url = "https://grch37.rest.ensembl.org" if is_hg19 else "https://rest.ensembl.org"
+            client = proxy_manager.get_client("ensembl")
             
-        results = []
-        if id_list:
-            with Entrez.esummary(db="nucleotide", id=",".join(id_list)) as sum_handle:
-                summaries = Entrez.read(sum_handle)
-                for s in summaries:
-                    results.append({
-                        "accession": s.get("Caption", ""),
-                        "title": s.get("Title", ""),
-                        "length": s.get("Length", 0)
+            # Lookup symbol to get transcripts
+            url = f"{base_url}/lookup/symbol/human/{query}?expand=1"
+            response = client.get(url, headers={"Content-Type": "application/json"})
+            if response.status_code == 200:
+                data = response.json()
+                for transcript in data.get("Transcript", []):
+                    # Try to map to RefSeq if possible (check multiple RefSeq DB names)
+                    xref_ac = ""
+                    refseq_dbs = ["RefSeq_mRNA", "RefSeq_genomic", "RefSeq_mRNA_predicted", "RefSeq_ncRNA"]
+                    for xref in transcript.get("ExternalReference", []):
+                        if xref.get("dbname") in refseq_dbs:
+                            xref_ac = xref.get("primary_id")
+                            break
+                    
+                    ensembl_results.append({
+                        "accession": xref_ac or transcript.get("id"),
+                        "title": f"{transcript.get('display_name', '')} (Ensembl/RefSeq mapping for {assembly})",
+                        "length": transcript.get("end", 0) - transcript.get("start", 0),
+                        "source": "Ensembl"
                     })
-        return results
-    except Exception as e:
-        logger.error(f"Failed to search NCBI reference for {query}: {e}")
-        return []
+        except Exception as e:
+            logger.warning(f"Ensembl search failed for {query}: {e}")
+        return ensembl_results
 
-def load_reference(ref_input: str) -> str:
+    def search_ncbi():
+        ncbi_results = []
+        try:
+            # We use a cleaner term without assembly over-filtering for transcripts
+            # because RefSeq transcripts (NM_) are often not tagged with build version in their metadata
+            term = query
+            if not is_accession:
+                term = f"{query} AND human[Organism] AND refseq[Filter]"
+
+            with Entrez.esearch(db="nucleotide", term=term, retmax=retmax) as handle:
+                record = Entrez.read(handle)
+                id_list = record.get("IdList", [])
+                
+            if id_list:
+                with Entrez.esummary(db="nucleotide", id=",".join(id_list)) as sum_handle:
+                    summaries = Entrez.read(sum_handle)
+                    for s in summaries:
+                        ncbi_results.append({
+                            "accession": s.get("Caption", ""),
+                            "title": s.get("Title", ""),
+                            "length": s.get("Length", 0),
+                            "source": "NCBI"
+                        })
+        except Exception as e:
+            logger.error(f"Failed to search NCBI reference for {query}: {e}")
+        return ncbi_results
+
+    # Execution order based on user preference
+    if is_hg19 and not is_accession:
+        # For HG19, Ensembl is much better for finding mapped transcripts
+        results.extend(search_ensembl())
+        ncbi_res = search_ncbi()
+        for r in ncbi_res:
+            if not any(res["accession"] == r["accession"] for res in results):
+                results.append(r)
+    else:
+        # Default or HG38: NCBI first
+        results.extend(search_ncbi())
+        if assembly and not is_accession:
+            ensembl_res = search_ensembl()
+            for r in ensembl_res:
+                if not any(res["accession"] == r["accession"] for res in results):
+                    results.append(r)
+    
+    return results
+
+def load_reference(ref_input: str, assembly: str | None = None) -> str:
     """Handles both local files and NCBI IDs, returning a valid FASTA path."""
     if os.path.exists(ref_input):
         return _process_local_fasta(ref_input)
-    return _fetch_ncbi_reference(ref_input)
+    return _fetch_ncbi_reference(ref_input, assembly=assembly)
 
 def _process_local_fasta(file_path: str) -> str:
     """Read and sanitize a local FASTA file."""
@@ -91,12 +150,13 @@ def _process_local_fasta(file_path: str) -> str:
         raise ReferenceError(f"Failed to process local FASTA: {e}")
 
 
-def _fetch_ncbi_reference(accession: str) -> str:
+def _fetch_ncbi_reference(accession: str, assembly: str | None = None) -> str:
     """Fetch reference from NCBI and cache it. Use .gz for large files (>=50kb)."""
-    os.makedirs(settings.cache_dir, exist_ok=True)
-    fasta_cache_file = os.path.join(settings.cache_dir, f"{accession}.fasta")
-    gb_cache_file = os.path.join(settings.cache_dir, f"{accession}.gb")
-
+    cache_dir = settings.get_cache_dir(assembly=assembly)
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    fasta_cache_file = os.path.join(cache_dir, f"{accession}.fasta")
+    gb_cache_file = os.path.join(cache_dir, f"{accession}.gb")
 
     if os.path.exists(fasta_cache_file) and os.path.exists(gb_cache_file):
         # Check size of existing fasta to decide if we should gzip it now
@@ -132,14 +192,14 @@ def _fetch_ncbi_reference(accession: str) -> str:
     except Exception as e:
         raise ReferenceError(f"NCBI fetch failed for {accession}: {e}")
 
-def get_reference_features(ref_input: str) -> list:
+def get_reference_features(ref_input: str, assembly: str | None = None) -> list:
     """
     Extracts features (exons, CDS, introns, etc.) from the reference.
     Ref_input can be an accession code or a file path.
     """
     # Ensure reference is loaded/fetched
     try:
-        loaded_path = load_reference(ref_input)
+        loaded_path = load_reference(ref_input, assembly=assembly)
     except ReferenceError:
         logger.warning(f"Could not load reference {ref_input} for feature extraction.")
         return []
@@ -163,7 +223,8 @@ def get_reference_features(ref_input: str) -> list:
              filename = os.path.basename(loaded_path)
              # remove extensions
              accession = filename.replace(".fasta.gz", "").replace(".fasta", "")
-             potential_gb = os.path.join(settings.cache_dir, f"{accession}.gb")
+             cache_dir = settings.get_cache_dir(assembly=assembly)
+             potential_gb = os.path.join(cache_dir, f"{accession}.gb")
              if os.path.exists(potential_gb):
                  gb_path = potential_gb
 
@@ -190,14 +251,14 @@ def get_reference_features(ref_input: str) -> list:
         logger.error(f"Error parsing features from {gb_path}: {e}")
         return []
 
-def get_fasta_sequence(ref_input: str) -> str:
+def get_fasta_sequence(ref_input: str, assembly: str | None = None) -> str:
     """Returns the sequence string from a FASTA file or NCBI accession."""
     if os.path.exists(ref_input) and ref_input.endswith(".gz"):
         path = ref_input
     elif os.path.exists(ref_input) and ref_input.endswith((".fasta", ".fa", ".fna")):
         path = ref_input
     else:
-        path = load_reference(ref_input)
+        path = load_reference(ref_input, assembly=assembly)
 
     open_func = gzip.open if path.endswith(".gz") else open
     mode = "rt" if path.endswith(".gz") else "r"
@@ -207,7 +268,7 @@ def get_fasta_sequence(ref_input: str) -> str:
         return str(record.seq)
 
 
-def get_lrg_mapping(accession: str) -> str | None:
+def get_lrg_mapping(accession: str, assembly: str | None = None) -> str | None:
     """
     Attempts to resolve an LRG (Locus Reference Genomic) equivalent for a RefSeq accession.
     Many NG_ records are mirrors of LRG_ records which Ensembl understands better.
@@ -216,11 +277,12 @@ def get_lrg_mapping(accession: str) -> str | None:
         return None
 
     # Determine potential GenBank path in cache
-    gb_path = os.path.join(settings.cache_dir, f"{accession}.gb")
+    cache_dir = settings.get_cache_dir(assembly=assembly)
+    gb_path = os.path.join(cache_dir, f"{accession}.gb")
     if not os.path.exists(gb_path):
         # Try to load it if possible
         try:
-            load_reference(accession)
+            load_reference(accession, assembly=assembly)
         except:
             return None
     

@@ -360,11 +360,12 @@ def check_reference(id: str):
     return {"exists": exists}
 
 @router.get("/search-reference")
-def search_reference(query: str):
+def search_reference(query: str, assembly: str | None = None):
     """
     Searches NCBI nucleotide database for a given query (gene name or accession).
+    If assembly is provided, it attempts to prioritize transcripts for that build.
     """
-    results = ref_service.search_reference(query)
+    results = ref_service.search_reference(query, assembly=assembly)
     return {"results": results}
 
 @router.get("/preview-read")
@@ -392,11 +393,12 @@ def create_job(request: CreateJobRequest):
     """
     # Resolve reference sequence
     ref_input = request.reference.get("value")
+    assembly = request.hgvs_config.assembly if request.hgvs_config else "GRCh38"
     sequence = None
     try:
         if ref_input:
-            ref_path = ref_service.load_reference(ref_input)
-            sequence = ref_service.get_fasta_sequence(ref_path)
+            ref_path = ref_service.load_reference(ref_input, assembly=assembly)
+            sequence = ref_service.get_fasta_sequence(ref_path, assembly=assembly)
     except Exception as e:
         logger.error(f"Failed to load reference sequence for {ref_input}: {e}")
 
@@ -468,11 +470,12 @@ def update_job(job_id: str, request: UpdateJobRequest):
     """
     # Resolve reference sequence
     ref_input = request.reference.get("value")
+    assembly = request.hgvs_config.assembly if request.hgvs_config else "GRCh38"
     sequence = None
     try:
         if ref_input:
-            ref_path = ref_service.load_reference(ref_input)
-            sequence = ref_service.get_fasta_sequence(ref_path)
+            ref_path = ref_service.load_reference(ref_input, assembly=assembly)
+            sequence = ref_service.get_fasta_sequence(ref_path, assembly=assembly)
     except Exception as e:
         logger.error(f"Failed to load reference sequence for {ref_input}: {e}")
 

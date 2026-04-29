@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     logs_dir: str = _persistence.get_logs_dir()
     uploads_dir: str = _persistence.get_uploads_dir()
 
+    def get_cache_dir(self, assembly: str | None = None) -> str:
+        if not assembly:
+            return self.cache_dir
+        
+        # If we have an assembly, we use the persistence manager to resolve the subfolder
+        # relative to the base directory of the current cache_dir
+        base_cache = self.cache_dir
+        norm_assembly = assembly.lower().replace("hg19", "grch37").replace("hg38", "grch38")
+        return os.path.join(base_cache, norm_assembly)
+
     # Tracy
     tracy_path: str = os.getenv("TRACY_PATH", "tracy")
 

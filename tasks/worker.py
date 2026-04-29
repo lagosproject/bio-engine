@@ -107,26 +107,28 @@ def process_job_background(job_id: str):
 
         # Resolve Reference
         ref_input = job.reference.get("value") if isinstance(job.reference, dict) else getattr(job.reference, "value", None)
+        assembly = job.hgvs_config.assembly if job.hgvs_config else "GRCh38"
+        
         if not ref_input:
             logger.error(f"Job {job_id} missing reference value")
             job_manager.update_job_status(job_id, JobStatus.FAILED)
             return
 
         # Use service to load reference
-        ref_path = ref_service.load_reference(ref_input)
+        ref_path = ref_service.load_reference(ref_input, assembly=assembly)
         job_manager.update_job_progress(job_id, 10, "Reference loaded successfully.")
 
         # Ensure reference_sequence is populated
         if not job.reference_sequence:
             try:
-                seq = ref_service.get_fasta_sequence(ref_path)
+                seq = ref_service.get_fasta_sequence(ref_path, assembly=assembly)
                 job_manager.update_job_reference_sequence(job_id, seq)
                 job.reference_sequence = seq
             except Exception as e:
                 logger.error(f"Failed to load reference sequence for job {job_id}: {e}")
 
         # Extract features (exons, CDS, etc.)
-        features = ref_service.get_reference_features(ref_input)
+        features = ref_service.get_reference_features(ref_input, assembly=assembly)
         if features:
             logger.info(f"Extracted {len(features)} features for job {job_id}")
             logger.info("Saving features to job...")

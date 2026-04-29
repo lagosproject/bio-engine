@@ -93,8 +93,13 @@ class PersistenceManager:
     def get_logs_dir(self) -> str:
         return str(self.base_dir / "logs")
 
-    def get_cache_dir(self) -> str:
-        return str(self.base_dir / "ncbi_cache")
+    def get_cache_dir(self, assembly: str | None = None) -> str:
+        base_cache = str(self.base_dir / "ncbi_cache")
+        if assembly:
+            # Normalize assembly name (e.g. hg38, GRCh38 -> grch38)
+            norm_assembly = assembly.lower().replace("hg19", "grch37").replace("hg38", "grch38")
+            return os.path.join(base_cache, norm_assembly)
+        return base_cache
 
     def get_uploads_dir(self) -> str:
         return str(self.base_dir / "uploads")
