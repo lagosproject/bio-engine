@@ -9,6 +9,7 @@ and biological database communication (e.g., fetching references, HGVS variants)
 
 import logging
 import os
+import shutil
 
 import re
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile
