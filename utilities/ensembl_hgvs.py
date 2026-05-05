@@ -17,16 +17,32 @@ class EnsemblHGVS:
     def format_hgvs(ac: str, hgvs_type: str, pos: int, ref: str, alt: str) -> str:
         """
         Formats a primary HGVS string.
-        Example: NC_000007.14:g.55181378G>A
+        Optimized to identify pure deletions/insertions by stripping common prefixes/suffixes.
         """
-        # Basic SNP/Indel formatting for primary ID
-        # For simplicity, we use the standard > for SNPs and delins for others if needed
-        # but Ensembl recoder is very flexible with input.
+        # Strip common prefix
+        while len(ref) > 0 and len(alt) > 0 and ref[0] == alt[0]:
+            ref = ref[1:]
+            alt = alt[1:]
+            pos += 1
+
+        # Strip common suffix
+        while len(ref) > 0 and len(alt) > 0 and ref[-1] == alt[-1]:
+            ref = ref[:-1]
+            alt = alt[:-1]
+
+        # Now handle the reduced cases
+        if not ref and not alt:
+            return f"{ac}:{hgvs_type}.{pos}=" # No change
+        
         if len(ref) == 1 and len(alt) == 1:
             return f"{ac}:{hgvs_type}.{pos}{ref}>{alt}"
         elif not ref: # Insertion
-            return f"{ac}:{hgvs_type}.{pos}_{pos+1}ins{alt}"
+            # HGVS insertion notation: pos_pos+1ins
+            # After stripping, 'pos' is the base after the insertion point
+            return f"{ac}:{hgvs_type}.{pos-1}_{pos}ins{alt}"
         elif not alt: # Deletion
+            if len(ref) == 1:
+                return f"{ac}:{hgvs_type}.{pos}del"
             return f"{ac}:{hgvs_type}.{pos}_{pos+len(ref)-1}del"
         else: # delins
             return f"{ac}:{hgvs_type}.{pos}_{pos+len(ref)-1}delins{alt}"
