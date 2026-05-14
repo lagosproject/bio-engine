@@ -1,5 +1,5 @@
 # Build environment for Bio-Engine
-FROM python:3.10-bullseye
+FROM mirror.gcr.io/library/python:3.10-bullseye
 
 # Install system dependencies for build tools and bio-libraries
 RUN apt-get update && apt-get install -y \
