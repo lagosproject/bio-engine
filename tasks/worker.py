@@ -9,6 +9,7 @@ bio-engine jobs. It coordinates parallel alignment and subsequent annotation loo
 import concurrent.futures
 import logging
 import os
+import shutil
 import tempfile
 from typing import Any
 
@@ -142,147 +143,151 @@ def process_job_background(job_id: str):
         job_output_base = tempfile.mkdtemp(prefix=f"ms_analyzer_{job_id}_")
         logger.info(f"Created job output directory: {job_output_base}")
 
-        # Create an ordering map to preserve patient/read sequence
-        order_map = {}
-        order_idx = 0
-        for patient in job.patients:
-            pid = str(patient.get("id"))
-            for read_entry in patient.get("reads", []):
-                r_path = read_entry['file'] if isinstance(read_entry, dict) else str(read_entry)
-                order_map[(pid, r_path)] = order_idx
-                order_idx += 1
-
-        # Prepare tasks for parallel execution
-        max_workers = min(32, (os.cpu_count() or 1) + 4)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_read = {}
-
+        try:
+            # Create an ordering map to preserve patient/read sequence
+            order_map = {}
+            order_idx = 0
             for patient in job.patients:
-                patient_id = patient.get("id")
-                reads = patient.get("reads", [])
+                pid = str(patient.get("id"))
+                for read_entry in patient.get("reads", []):
+                    r_path = read_entry['file'] if isinstance(read_entry, dict) else str(read_entry)
+                    order_map[(pid, r_path)] = order_idx
+                    order_idx += 1
 
-                for read_entry in reads:
-                    future = executor.submit(
-                        _process_single_read,
-                        str(patient_id),
-                        read_entry,
-                        job,
-                        ref_path,
-                        job_output_base
-                    )
-                    future_to_read[future] = (patient_id, read_entry)
+            # Prepare tasks for parallel execution
+            max_workers = min(32, (os.cpu_count() or 1) + 4)
 
-            total_reads = len(future_to_read)
-            completed_reads = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_read = {}
 
-            for future in concurrent.futures.as_completed(future_to_read):
+                for patient in job.patients:
+                    patient_id = patient.get("id")
+                    reads = patient.get("reads", [])
+
+                    for read_entry in reads:
+                        future = executor.submit(
+                            _process_single_read,
+                            str(patient_id),
+                            read_entry,
+                            job,
+                            ref_path,
+                            job_output_base
+                        )
+                        future_to_read[future] = (patient_id, read_entry)
+
+                total_reads = len(future_to_read)
+                completed_reads = 0
+
+                for future in concurrent.futures.as_completed(future_to_read):
+                    try:
+                        res = future.result()
+                        results.append(res)
+
+                        read_path_processed = res.get('readPath', 'unknown')
+                        logger.info(f"Finished processing read: {read_path_processed}")
+                    except Exception as exc:
+                        pid, re = future_to_read[future]
+                        read_p = re['file'] if isinstance(re, dict) else re
+                        logger.error(f"Read processing generated an exception: {exc}")
+                        results.append({
+                            "patientId": pid,
+                            "readPath": read_p,
+                            "error": str(exc)
+                        })
+
+                    completed_reads += 1
+                    # Progress from 15% to 80%
+                    progress_percent = 15 + int((completed_reads / total_reads) * 65)
+                    job_manager.update_job_progress(job_id, progress_percent, f"Processed {completed_reads}/{total_reads} reads...")
+
+            # Sort results based on original submission order
+            results.sort(key=lambda x: order_map.get((str(x.get("patientId")), x.get("readPath")), 999))
+
+            # 1. Collect all unique primary HGVS variants found by Tracy
+            all_alternatives = {}
+            unique_hgvs = set()
+            for res in results:
+                variants = res.get("alignment", {}).get("variants", {})
+                rows = variants.get("rows", [])
+                header = variants.get("columns", [])
+                if "hgvs" in header:
+                    h_idx = header.index("hgvs")
+                    for row in rows:
+                        if len(row) > h_idx and row[h_idx]:
+                            unique_hgvs.add(row[h_idx])
+
+            # 2. Batch annotate equivalents using EnsemblHGVS (only those NOT already in job)
+            existing_alternatives = set(job.hgvs_alternatives.keys())
+            hgvs_to_lookup = list(unique_hgvs - existing_alternatives)
+
+            if hgvs_to_lookup and job.hgvs_config and job.hgvs_config.transcript:
+                job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(hgvs_to_lookup)} new variants via Ensembl...")
                 try:
-                    res = future.result()
-                    results.append(res)
+                    from utilities.ensembl_hgvs import EnsemblHGVS
+                    ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
+                    all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
+                    
+                    # Bulk update alternatives to job
+                    if all_alternatives:
+                        job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+                except Exception as e:
+                    logger.error(f"Batch HGVS annotation failed: {e}")
+            elif unique_hgvs and job.hgvs_config and job.hgvs_config.transcript:
+                logger.info("All variants already have alternatives in job.")
 
-                    read_path_processed = res.get('readPath', 'unknown')
-                    logger.info(f"Finished processing read: {read_path_processed}")
-                except Exception as exc:
-                    pid, re = future_to_read[future]
-                    read_p = re['file'] if isinstance(re, dict) else re
-                    logger.error(f"Read processing generated an exception: {exc}")
-                    results.append({
-                        "patientId": pid,
-                        "readPath": read_p,
-                        "error": str(exc)
-                    })
+            # Update results in job manager before VEP processing to ensure we have the latest HGVS
+            job_manager.update_job_results(job_id, results)
 
-                completed_reads += 1
-                # Progress from 15% to 80%
-                progress_percent = 15 + int((completed_reads / total_reads) * 65)
-                job_manager.update_job_progress(job_id, progress_percent, f"Processed {completed_reads}/{total_reads} reads...")
+            # Global VEP Annotation (if enabled)
+            if job.hgvs_config and job.hgvs_config.auto_vep:
+                job_manager.update_job_progress(job_id, 80, "Annotating variants with VEP (this may take a while)...")
+                try:
+                    from utilities.vep_utils import VEPAnnotator
+                    vep_annotator = VEPAnnotator(
+                        mode=job.hgvs_config.vep_mode.value if hasattr(job.hgvs_config.vep_mode, 'value') else job.hgvs_config.vep_mode,
+                        assembly=job.hgvs_config.assembly or "GRCh38",
+                        vep_path=job.hgvs_config.vep_path,
+                        vep_data=job.hgvs_config.vep_data
+                    )
 
-        # Sort results based on original submission order
-        results.sort(key=lambda x: order_map.get((str(x.get("patientId")), x.get("readPath")), 999))
+                    # 1. Collect all unique HGVS strings found in the results table
+                    # We use these directly because VEPAnnotator now handles internal mapping (NG_ -> LRG_ -> NC_) 
+                    # and ensures the result is keyed by the original input.
+                    all_hgvs = set()
+                    for res in results:
+                        variants = res.get("alignment", {}).get("variants", {})
+                        rows = variants.get("rows", [])
+                        header = variants.get("columns", [])
+                        if "hgvs" in header:
+                            h_idx = header.index("hgvs")
+                            for row in rows:
+                                if len(row) > h_idx and row[h_idx]:
+                                    all_hgvs.add(row[h_idx])
 
-        # 1. Collect all unique primary HGVS variants found by Tracy
-        all_alternatives = {}
-        unique_hgvs = set()
-        for res in results:
-            variants = res.get("alignment", {}).get("variants", {})
-            rows = variants.get("rows", [])
-            header = variants.get("columns", [])
-            if "hgvs" in header:
-                h_idx = header.index("hgvs")
-                for row in rows:
-                    if len(row) > h_idx and row[h_idx]:
-                        unique_hgvs.add(row[h_idx])
+                    # 2. Filter out already cached annotations
+                    existing_hgvs = set(job.vep_annotations.keys())
+                    hgvs_to_annotate = list(all_hgvs - existing_hgvs)
 
-        # 2. Batch annotate equivalents using EnsemblHGVS (only those NOT already in job)
-        existing_alternatives = set(job.hgvs_alternatives.keys())
-        hgvs_to_lookup = list(unique_hgvs - existing_alternatives)
+                    if hgvs_to_annotate:
+                        logger.info(f"Fetching VEP annotations for {len(hgvs_to_annotate)} variants...")
+                        job_manager.update_job_progress(job_id, 85, f"Annotating {len(hgvs_to_annotate)} variants via Ensembl API...")
+                        new_annotations = vep_annotator.get_annotations(hgvs_to_annotate)
+                        if new_annotations:
+                            job_manager.update_job_vep_annotations(job_id, new_annotations)
+                    else:
+                        logger.info("All variants already have VEP annotations or none found.")
+                        job_manager.update_job_progress(job_id, 90, "Finished VEP annotation step.")
 
-        if hgvs_to_lookup and job.hgvs_config and job.hgvs_config.transcript:
-            job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(hgvs_to_lookup)} new variants via Ensembl...")
-            try:
-                from utilities.ensembl_hgvs import EnsemblHGVS
-                ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
-                all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
-                
-                # Bulk update alternatives to job
-                if all_alternatives:
-                    job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
-            except Exception as e:
-                logger.error(f"Batch HGVS annotation failed: {e}")
-        elif unique_hgvs and job.hgvs_config and job.hgvs_config.transcript:
-            logger.info("All variants already have alternatives in job.")
+                except Exception as e:
+                    logger.error(f"Global VEP annotation failed for job {job_id}: {e}")
+                    job_manager.update_job_progress(job_id, 90, f"VEP Annotation failed: {str(e)}")
 
-        # Update results in job manager before VEP processing to ensure we have the latest HGVS
-        job_manager.update_job_results(job_id, results)
-
-        # Global VEP Annotation (if enabled)
-        if job.hgvs_config and job.hgvs_config.auto_vep:
-            job_manager.update_job_progress(job_id, 80, "Annotating variants with VEP (this may take a while)...")
-            try:
-                from utilities.vep_utils import VEPAnnotator
-                vep_annotator = VEPAnnotator(
-                    mode=job.hgvs_config.vep_mode.value if hasattr(job.hgvs_config.vep_mode, 'value') else job.hgvs_config.vep_mode,
-                    assembly=job.hgvs_config.assembly or "GRCh38",
-                    vep_path=job.hgvs_config.vep_path,
-                    vep_data=job.hgvs_config.vep_data
-                )
-
-                # 1. Collect all unique HGVS strings found in the results table
-                # We use these directly because VEPAnnotator now handles internal mapping (NG_ -> LRG_ -> NC_) 
-                # and ensures the result is keyed by the original input.
-                all_hgvs = set()
-                for res in results:
-                    variants = res.get("alignment", {}).get("variants", {})
-                    rows = variants.get("rows", [])
-                    header = variants.get("columns", [])
-                    if "hgvs" in header:
-                        h_idx = header.index("hgvs")
-                        for row in rows:
-                            if len(row) > h_idx and row[h_idx]:
-                                all_hgvs.add(row[h_idx])
-
-                # 2. Filter out already cached annotations
-                existing_hgvs = set(job.vep_annotations.keys())
-                hgvs_to_annotate = list(all_hgvs - existing_hgvs)
-
-                if hgvs_to_annotate:
-                    logger.info(f"Fetching VEP annotations for {len(hgvs_to_annotate)} variants...")
-                    job_manager.update_job_progress(job_id, 85, f"Annotating {len(hgvs_to_annotate)} variants via Ensembl API...")
-                    new_annotations = vep_annotator.get_annotations(hgvs_to_annotate)
-                    if new_annotations:
-                        job_manager.update_job_vep_annotations(job_id, new_annotations)
-                else:
-                    logger.info("All variants already have VEP annotations or none found.")
-                    job_manager.update_job_progress(job_id, 90, "Finished VEP annotation step.")
-
-            except Exception as e:
-                logger.error(f"Global VEP annotation failed for job {job_id}: {e}")
-                job_manager.update_job_progress(job_id, 90, f"VEP Annotation failed: {str(e)}")
-
-        # Final status update
-        job_manager.update_job_progress(job_id, 100, "Analysis completed successfully.")
-        job_manager.update_job_status(job_id, JobStatus.COMPLETED)
+            # Final status update
+            job_manager.update_job_progress(job_id, 100, "Analysis completed successfully.")
+            job_manager.update_job_status(job_id, JobStatus.COMPLETED)
+        finally:
+            logger.info(f"Cleaning up temporary output directory: {job_output_base}")
+            shutil.rmtree(job_output_base, ignore_errors=True)
 
     except Exception as e:
         job_manager.update_job_status(job_id, JobStatus.FAILED)

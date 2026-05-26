@@ -60,7 +60,12 @@ app = FastAPI(title="Bio-Engine Sidecar")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost",
+        "http://127.0.0.1",
+        "tauri://localhost"
+    ],
+    allow_origin_regex=r"^https?://localhost(:\d+)?|^https?://127\.0\.0\.1(:\d+)?|^tauri://localhost$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -106,6 +111,8 @@ if __name__ == "__main__":
     parser.add_argument("--bgzip-path", type=str, help="Path to the bgzip binary")
     parser.add_argument("--resource-path", type=str, help="Path to the application resources (where DLLs are located)")
     parser.add_argument("--data-dir", type=str, help="Path to the application data directory (logs, jobs, cache)")
+    parser.add_argument("--host", type=str, help="Host to bind the FastAPI server")
+    parser.add_argument("--port", type=int, help="Port to bind the FastAPI server")
     args, unknown = parser.parse_known_args()
 
     def clean_win_path(p):
@@ -203,6 +210,14 @@ if __name__ == "__main__":
         # Re-initialize logging with new path
         setup_logging()
         logger.info(f"Logging re-initialized at: {settings.logs_dir}")
+
+    if args.host:
+        logger.info(f"Overriding host from CLI: {args.host}")
+        settings.host = args.host
+
+    if args.port:
+        logger.info(f"Overriding port from CLI: {args.port}")
+        settings.port = args.port
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)

@@ -350,6 +350,16 @@ class TracyPipeline:
         old_basecalls = data.get("basecalls", {})
         new_variants = data.get("variants", {"rows": []})
 
+        columns = new_variants.get("columns", [])
+        try:
+            signalpos_idx = columns.index("signalpos")
+        except ValueError:
+            signalpos_idx = 10
+        try:
+            basepos_idx = columns.index("basepos")
+        except ValueError:
+            basepos_idx = 9
+
         if old_basecalls and max_len > 0:
             new_basecalls = {}
             num_calls = len(basecallPos)
@@ -363,11 +373,10 @@ class TracyPipeline:
                 new_call_idx = num_calls - call_idx + 1
 
                 for variant in new_variants.get("rows", []):
-                    # Variant structure: [..., pos, ...] - index 10 was used in original code
-                    # verification needed: tracy variant array structure.
-                    # Assuming index 10 is indeed signal position.
-                    if len(variant) > 10 and variant[10] == old_sig_pos:
-                        variant[10], variant[9] = new_sig_pos, new_call_idx
+                    if len(variant) > signalpos_idx and variant[signalpos_idx] == old_sig_pos:
+                        variant[signalpos_idx] = new_sig_pos
+                        if len(variant) > basepos_idx:
+                            variant[basepos_idx] = new_call_idx
 
                 new_bases = [get_complement(b) for b in parts[1].split("|")]
                 new_basecalls[str(new_sig_pos)] = f"{new_call_idx}:{'|'.join(new_bases)}"
@@ -376,8 +385,11 @@ class TracyPipeline:
         chartConfig = data.get("chartConfig", {})
         if chartConfig and new_variants["rows"]:
             # Recalculate ranges
-            # Assuming index 10 is signal pos
-            newRanges = [[v[10]-150, v[10]+150] for v in new_variants["rows"] if len(v) > 10]
+            newRanges = [
+                [v[signalpos_idx]-150, v[signalpos_idx]+150]
+                for v in new_variants["rows"]
+                if len(v) > signalpos_idx
+            ]
             if newRanges:
                 chartConfig["x"]["axis"]["range"] = [min(r[0] for r in newRanges), max(r[1] for r in newRanges)]
                 new_variants["xranges"] = newRanges
