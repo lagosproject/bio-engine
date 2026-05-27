@@ -30,6 +30,7 @@ from data.models import (
     UpdateVariantStatusRequest,
     ApproveVariantRequest,
     HotspotPoint,
+    ApprovedVariantResponse,
 )
 from services import aligner as aligner_service
 from services import reference as ref_service
@@ -118,7 +119,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                         if hgvs_key:
                             # Try to fetch alternatives on the fly if missing or not genomic
                             alts = job.hgvs_alternatives.get(hgvs_key, [])
-                            has_genomic = any(re.search(r"(?:NC_0000\d{2}|\d{1,2}|X|Y|MT)[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
+                            has_genomic = any(re.match(r"(?:NC_0000\d{2}|NC_012920|(?:chr)?(?:[1-9]|1\d|2[0-2]|X|Y|MT|M))[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
                             
                             if not has_genomic:
                                 try:
@@ -130,6 +131,8 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                     if new_alts:
                                         alts = list(set(alts + new_alts))
                                         job_manager.add_job_hgvs_alternatives(job_id, hgvs_key, alts)
+                                    # Ensure we update has_genomic after fetching new alternatives
+                                    has_genomic = any(re.match(r"(?:NC_0000\d{2}|NC_012920|(?:chr)?(?:[1-9]|1\d|2[0-2]|X|Y|MT|M))[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
                                 except Exception as e:
                                     logger.warning(f"On-the-fly HGVS fetch failed for {hgvs_key}: {e}")
                             
@@ -137,14 +140,15 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                             candidates = [hgvs_key] + alts
                             logger.info(f"Sync: Checking {len(candidates)} HGVS/SPDI candidates for {hgvs_key} (patient {patient_id})")
                             for alt in candidates:
-                            # Match both NC_0000XX.X:g.XXXX (HGVS) and NC_0000XX.X:XXXX:A:T (SPDI)
+                                # Match both NC_0000XX.X:g.XXXX (HGVS) and NC_0000XX.X:XXXX:A:T (SPDI)
                                 # And chromosome numbers like 19:g.XXXX or 19:XXXX:A:T
-                                match = re.search(r"(?:NC_0000(\d{2})|(\d{1,2}|X|Y|MT))[:.](?:g\.)?(\d+)", alt)
+                                match = re.match(r"(?:NC_0000(\d{2})|(NC_012920)|(?:chr)?(\d{1,2}|X|Y|MT|M))[:.](?:g\.)?(\d+)", alt)
                                 if match:
-                                    chrom = match.group(1) or match.group(2)
+                                    chrom = match.group(1) or (match.group(2) and "MT") or match.group(3)
+                                    if chrom == "M": chrom = "MT"
                                     if chrom.isdigit(): chrom = str(int(chrom))
                                     
-                                    pos = int(match.group(3))
+                                    pos = int(match.group(4))
                                     # SPDI is 0-based, HGVS is 1-based.
                                     # SPDI usually looks like Ac:Pos:Ref:Alt (3 colons)
                                     # HGVS looks like Ac:g.PosRef>Alt
@@ -189,7 +193,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                             if hgvs_key:
                                 # Try to fetch alternatives on the fly if missing or not genomic
                                 alts = job.hgvs_alternatives.get(hgvs_key, [])
-                                has_genomic = any(re.search(r"(?:NC_0000\d{2}|\d{1,2}|X|Y|MT)[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
+                                has_genomic = any(re.match(r"(?:NC_0000\d{2}|NC_012920|(?:chr)?(?:[1-9]|1\d|2[0-2]|X|Y|MT|M))[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
 
                                 if not has_genomic:
                                     try:
@@ -201,18 +205,21 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                         if new_alts:
                                             alts = list(set(alts + new_alts))
                                             job_manager.add_job_hgvs_alternatives(job_id, hgvs_key, alts)
+                                        # Ensure we update has_genomic after fetching new alternatives
+                                        has_genomic = any(re.match(r"(?:NC_0000\d{2}|NC_012920|(?:chr)?(?:[1-9]|1\d|2[0-2]|X|Y|MT|M))[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
                                     except Exception as e:
                                         logger.warning(f"On-the-fly HGVS fetch failed for {hgvs_key}: {e}")
 
                                 candidates = [hgvs_key] + alts
                                 logger.info(f"Sync: Checking {len(candidates)} HGVS/SPDI candidates for {hgvs_key}")
                                 for alt in candidates:
-                                    match = re.search(r"(?:NC_0000(\d{2})|(\d{1,2}|X|Y|MT))[:.](?:g\.)?(\d+)", alt)
+                                    match = re.match(r"(?:NC_0000(\d{2})|(NC_012920)|(?:chr)?(\d{1,2}|X|Y|MT|M))[:.](?:g\.)?(\d+)", alt)
                                     if match:
-                                        chrom = match.group(1) or match.group(2)
+                                        chrom = match.group(1) or (match.group(2) and "MT") or match.group(3)
+                                        if chrom == "M": chrom = "MT"
                                         if chrom.isdigit(): chrom = str(int(chrom))
 
-                                        pos = int(match.group(3))
+                                        pos = int(match.group(4))
                                         if ":g." not in alt and alt.count(":") >= 2:
                                             pos += 1 # Normalize SPDI 0-based to 1-based
 
@@ -721,3 +728,11 @@ def flush_cache():
         return {"status": "success", "message": "Cache cleared successfully"}
     else:
         return {"status": "error", "message": "Failed to clear cache or Redis not available"}, 500
+
+
+@router.get("/variants/approved", response_model=list[ApprovedVariantResponse])
+def get_approved_variants(assembly: str = "GRCh38", db: Session = Depends(get_db)):
+    """
+    Returns a list of all approved variants.
+    """
+    return db.query(ApprovedVariant).filter(ApprovedVariant.assembly == assembly).all()

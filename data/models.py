@@ -280,3 +280,19 @@ class HotspotPoint(BaseModel):
     start: int
     stop: int
     count: int
+
+
+class ApprovedVariantResponse(BaseModel):
+    id: int
+    chromosome: str
+    position: int
+    ref_allele: str
+    alt_allele: str
+    gene: str | None = None
+    approved_by: str
+    created_at: Any
+    job_id: str | None = None
+    patient_id: str | None = None
+    assembly: str
+
+    model_config = ConfigDict(from_attributes=True)
