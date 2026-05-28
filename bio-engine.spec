@@ -91,7 +91,7 @@ for pkg in ['uvicorn', 'fastapi', 'starlette', 'h11', 'anyio']:
 packages_to_collect = [
     'fastapi', 'uvicorn', 'h11', 'click', 'anyio', 'sniffio', 'starlette',
     'Bio', 'hgvs', 'ometa', 'parsley', 'terml', 
-    'psycopg2', 'bioutils', 'pkg_resources', 'httpx', 'pysam'
+    'psycopg2', 'bioutils', 'pkg_resources', 'httpx', 'pysam', 'redis'
 ]
 
 for package in packages_to_collect:
