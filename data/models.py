@@ -42,7 +42,7 @@ class TracyConfig(BaseModel):
 
 class VepMode(str, Enum):
     ONLINE = "online"
-    LOCAL = "local"
+    OPENCRAVAT = "opencravat"
     DOCKER = "docker"
 
 class HGVSConfig(BaseModel):
@@ -296,3 +296,28 @@ class ApprovedVariantResponse(BaseModel):
     assembly: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class OCStatus(BaseModel):
+    installed: bool
+    version: str | None = None
+    data_dir: str | None = None
+    disk_used_bytes: int | None = None
+    disk_free_bytes: int | None = None
+    error: str | None = None
+
+
+class OCModule(BaseModel):
+    name: str
+    version: str | None = None
+    type: str | None = None
+    size_bytes: int | None = None
+    installed: bool | None = None
+    title: str | None = None
+
+
+class OCInstallTask(BaseModel):
+    task_id: str
+    module: str
+    status: str  # pending | running | completed | failed
+    error: str | None = None

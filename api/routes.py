@@ -31,10 +31,14 @@ from data.models import (
     ApproveVariantRequest,
     HotspotPoint,
     ApprovedVariantResponse,
+    OCStatus,
+    OCModule,
+    OCInstallTask,
 )
 from services import aligner as aligner_service
 from services import reference as ref_service
 from services.job_manager import JobManager
+from services import opencravat as oc_service
 from tasks.worker import annotate_hgvs_background, process_job_background
 
 from sqlalchemy.orm import Session
@@ -736,3 +740,69 @@ def get_approved_variants(assembly: str = "GRCh38", db: Session = Depends(get_db
     Returns a list of all approved variants.
     """
     return db.query(ApprovedVariant).filter(ApprovedVariant.assembly == assembly).all()
+
+
+# ---------------------------------------------------------------------------
+# OpenCRAVAT management
+# ---------------------------------------------------------------------------
+
+@router.get("/opencravat/status", response_model=OCStatus)
+def oc_status():
+    """
+    Returns OpenCRAVAT installation status, version, data directory path,
+    and disk space consumed / available.
+    """
+    from core.config import settings
+    return oc_service.get_status(oc_path=settings.oc_path)
+
+
+@router.get("/opencravat/modules", response_model=list[OCModule])
+def oc_list_installed():
+    """
+    Returns all locally installed OpenCRAVAT modules (annotators, reporters, etc.).
+    """
+    from core.config import settings
+    return oc_service.list_installed(oc_path=settings.oc_path)
+
+
+@router.get("/opencravat/modules/store", response_model=list[OCModule])
+def oc_list_store():
+    """
+    Returns all modules available in the OpenCRAVAT store, including those
+    not yet installed. Requires an internet connection to refresh the store index.
+    """
+    from core.config import settings
+    return oc_service.list_store(oc_path=settings.oc_path)
+
+
+@router.post("/opencravat/modules/{module_name}/install", response_model=OCInstallTask)
+def oc_install_module(module_name: str):
+    """
+    Starts a background installation of the given OpenCRAVAT module.
+    Returns a task object — poll GET /opencravat/tasks/{task_id} for status.
+    """
+    from core.config import settings
+    task_id = oc_service.install_module(module_name, oc_path=settings.oc_path)
+    return oc_service.get_task(task_id)
+
+
+@router.get("/opencravat/tasks/{task_id}", response_model=OCInstallTask)
+def oc_get_task(task_id: str):
+    """
+    Returns the current status of an install task started via the install endpoint.
+    Status values: pending | running | completed | failed
+    """
+    task = oc_service.get_task(task_id)
+    if task is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+    return task
+
+
+@router.delete("/opencravat/modules/{module_name}")
+def oc_uninstall_module(module_name: str):
+    """
+    Uninstalls the given OpenCRAVAT module and removes its data from disk.
+    """
+    from core.config import settings
+    return oc_service.uninstall_module(module_name, oc_path=settings.oc_path)

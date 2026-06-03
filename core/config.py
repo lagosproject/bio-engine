@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Tracy
     tracy_path: str = os.getenv("TRACY_PATH", "tracy")
 
+    # OpenCRAVAT
+    oc_path: str = os.getenv("BIO_OC_PATH", "oc")
+
     # Samtools & Bgzip
     samtools_path: str = os.getenv("BIO_SAMTOOLS_PATH", "samtools")
     bgzip_path: str = os.getenv("BIO_BGZIP_PATH", "bgzip")

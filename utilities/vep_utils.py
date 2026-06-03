@@ -276,53 +276,245 @@ class OnlineVEPAnnotator(BaseVEPAnnotator):
         raw_results = self.annotate_hgvs_batch(hgvs_variants)
         return self._structure_results(raw_results)
 
-class LocalVEPAnnotator(BaseVEPAnnotator):
+class OpenCRAVATAnnotator(BaseVEPAnnotator):
     """
-    Annotator that uses a local VEP installation.
+    Annotator using OpenCRAVAT CLI for local variant annotation.
+
+    HGVS variants are resolved to genomic coordinates via Ensembl variant_recoder
+    (lightweight coordinate lookup only), then annotated locally by all installed
+    OC modules. Results include core schema fields plus an `oc_data` dict containing
+    every field from every installed annotator — new databases are picked up
+    automatically without code changes.
+
+    Requires: pip install open-cravat && oc install-base
     """
-    def __init__(self, assembly: str = "GRCh38", vep_path: str = "vep", vep_data: str | None = None):
+
+    _OC_IMPACT_RANK = {"HIGH": 4, "MODERATE": 3, "LOW": 2, "MODIFIER": 1}
+
+    def __init__(self, assembly: str = "GRCh38", oc_path: str = "oc"):
         super().__init__(assembly)
-        self.vep_path = vep_path
-        self.vep_data = vep_data
+        self.oc_path = oc_path
+        self.genome = "hg38" if assembly.upper() == "GRCh38" else "hg19"
+        self.ensembl_url = (
+            "https://grch37.rest.ensembl.org" if assembly.upper() == "GRCh37"
+            else "https://rest.ensembl.org"
+        )
+        self.client = proxy_manager.get_client("ensembl")
+        self.headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        self._refseq_pattern = re.compile(r'^(NM_|NP_|NC_|NG_)', re.IGNORECASE)
+
+    def _recode_to_vcf(self, hgvs_variants: list[str]) -> dict[str, str]:
+        """
+        Returns {original_hgvs: vcf_string} where vcf_string is 'chrom:pos:ref:alt'.
+        Uses Ensembl variant_recoder for coordinate resolution only.
+        """
+        if not hgvs_variants:
+            return {}
+
+        # NG_ → LRG_ pre-processing (same logic as OnlineVEPAnnotator)
+        variants_to_send: list[str] = []
+        id_map: dict[str, str] = {}  # sent_id → original_hgvs
+
+        for variant in hgvs_variants:
+            ac = variant.split(':')[0] if ':' in variant else variant
+            if ac.startswith("NG_"):
+                lrg = get_lrg_mapping(ac)
+                mapped = variant.replace(ac, lrg) if lrg else variant
+                id_map[mapped] = variant
+                variants_to_send.append(mapped)
+            else:
+                id_map[variant] = variant
+                variants_to_send.append(variant)
+
+        endpoint = f"{self.ensembl_url}/variant_recoder/human"
+        payload = {"ids": variants_to_send, "fields": "vcf_string"}
+        result: dict[str, str] = {}
+        retries = 3
+
+        for attempt in range(retries):
+            try:
+                response = self.client.post(endpoint, json=payload, headers=self.headers)
+                if response.status_code == 429:
+                    time.sleep(int(response.headers.get("Retry-After", 2)))
+                    continue
+                response.raise_for_status()
+                for item in response.json():
+                    for allele_info in item.values():
+                        if not isinstance(allele_info, dict):
+                            continue
+                        sent_id = allele_info.get("input")
+                        if not sent_id:
+                            continue
+                        original = id_map.get(sent_id, sent_id)
+                        vcf_strings = allele_info.get("vcf_string", [])
+                        if vcf_strings:
+                            result[original] = vcf_strings[0]
+                        break
+                break
+            except httpx.HTTPError as e:
+                logging.error(f"VCF recoding attempt {attempt + 1} failed: {e}")
+                if attempt < retries - 1:
+                    time.sleep(2)
+
+        return result
+
+    def _run_opencravat(self, input_lines: list[str]) -> list[dict[str, Any]]:
+        """Write OC input file, run oc run, return parsed variant JSON records."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            input_path = Path(tmp_dir) / "variants.txt"
+            input_path.write_text("\n".join(input_lines))
+
+            cmd = [
+                self.oc_path, "run", str(input_path),
+                "-l", self.genome,
+                "-t", "json",
+                "-d", tmp_dir,
+            ]
+            logging.info(f"Running OpenCRAVAT: {' '.join(cmd)}")
+
+            try:
+                process = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=300
+                )
+                if process.returncode != 0:
+                    logging.error(f"OpenCRAVAT error: {process.stderr[:500]}")
+                    return []
+            except subprocess.TimeoutExpired:
+                logging.error("OpenCRAVAT timed out after 5 minutes")
+                return []
+            except FileNotFoundError:
+                logging.error(
+                    f"OpenCRAVAT binary not found at '{self.oc_path}'. "
+                    "Install with: pip install open-cravat && oc install-base"
+                )
+                return []
+
+            # OC writes {basename}.variant.json for the variant-level output
+            json_files = sorted(Path(tmp_dir).glob("*.variant.json"))
+            if not json_files:
+                json_files = sorted(f for f in Path(tmp_dir).glob("*.json")
+                                    if "gene" not in f.name)
+            if not json_files:
+                logging.error("No JSON output produced by OpenCRAVAT")
+                return []
+
+            raw = json_files[0].read_text().strip()
+            try:
+                data = json.loads(raw)
+                return data if isinstance(data, list) else [data]
+            except json.JSONDecodeError:
+                records = []
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if line:
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+                return records
+
+    def _map_oc_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        """
+        Map an OC record to the standard annotation schema.
+        All raw OC fields (from every installed annotator) are preserved in `oc_data`.
+        """
+        def first(*keys: str) -> str:
+            for k in keys:
+                v = record.get(k)
+                if v is not None and v != "":
+                    return str(v)
+            return ""
+
+        annotation: dict[str, Any] = {
+            "gene_symbol": first("hugo"),
+            "consequence": first("so"),
+            "impact": first("impact"),
+            "hgvs_c": first("hgvs_coding", "coding"),
+            "hgvs_p": first("hgvs_protein", "achange"),
+            "sift": "",
+            "polyphen": "",
+            "clin_sig": [],
+            "phenotype": [],
+            # All fields from all installed OC annotators — expands automatically
+            # when new databases are added via `oc install <module>`
+            "oc_data": {k: v for k, v in record.items() if v is not None and v != ""},
+            "retrieved_at": datetime.now().isoformat(),
+        }
+
+        sift_pred = record.get("sift__prediction") or record.get("sift__pred")
+        sift_score = record.get("sift__score")
+        if sift_pred:
+            annotation["sift"] = f"{sift_pred} ({sift_score})" if sift_score is not None else sift_pred
+
+        pp_pred = record.get("polyphen2__hdiv_pred") or record.get("polyphen2__hvar_pred")
+        pp_score = record.get("polyphen2__hdiv_score") or record.get("polyphen2__hvar_score")
+        if pp_pred:
+            annotation["polyphen"] = f"{pp_pred} ({pp_score})" if pp_score is not None else pp_pred
+
+        clin_sig = record.get("clinvar__sig")
+        if clin_sig:
+            sigs = clin_sig if isinstance(clin_sig, list) else [clin_sig]
+            annotation["clin_sig"] = sorted({str(s).replace("_", " ") for s in sigs})
+
+        diseases = record.get("clinvar__disease_names") or record.get("omim__disease_names")
+        if diseases:
+            annotation["phenotype"] = (diseases if isinstance(diseases, list) else [diseases])[:10]
+
+        return annotation
 
     def get_annotations(self, hgvs_variants: list[str]) -> dict[str, Any]:
-        if not hgvs_variants: return {}
+        if not hgvs_variants:
+            return {}
 
-        results = []
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp_input:
-            for variant in hgvs_variants:
-                tmp_input.write(f"{variant}\n")
-            tmp_input_path = tmp_input.name
+        # Step 1: resolve HGVS → VCF coordinates (Ensembl, coordinate lookup only)
+        vcf_map = self._recode_to_vcf(hgvs_variants)
+        if not vcf_map:
+            logging.error("OpenCRAVAT: failed to resolve any HGVS to VCF coordinates")
+            return {}
 
-        try:
-            cmd = [
-                self.vep_path,
-                "--input_file", tmp_input_path,
-                "--format", "hgvs",
-                "--output_file", "STDOUT",
-                "--json",
-                "--database",
-                "--assembly", self.assembly,
-                "--everything"
-            ]
-            if self.vep_data:
-                cmd.extend(["--dir", self.vep_data])
-            
-            logging.info(f"Running local VEP: {' '.join(cmd)}")
-            process = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            
-            for line in process.stdout.splitlines():
-                if line.strip():
-                    try:
-                        results.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Local VEP failed: {e.stderr}")
-        finally:
-            Path(tmp_input_path).unlink(missing_ok=True)
+        # Step 2: build OC input lines; track uid (1-based line number) → original HGVS
+        uid_to_hgvs: dict[int, str] = {}
+        input_lines: list[str] = []
 
-        return self._structure_results(results)
+        for hgvs in hgvs_variants:
+            vcf_string = vcf_map.get(hgvs)
+            if not vcf_string:
+                continue
+            parts = vcf_string.split(":")
+            if len(parts) != 4:
+                continue
+            chrom, pos, ref, alt = parts
+            if not chrom.startswith("chr"):
+                chrom = f"chr{chrom}"
+            uid_to_hgvs[len(input_lines) + 1] = hgvs
+            input_lines.append(f"{chrom}\t{pos}\t+\t{ref}\t{alt}")
+
+        if not input_lines:
+            return {}
+
+        # Step 3: run OC locally
+        oc_records = self._run_opencravat(input_lines)
+
+        # Step 4: group by uid — OC may emit multiple transcript rows per variant
+        uid_groups: dict[int, list[dict[str, Any]]] = {}
+        for rec in oc_records:
+            uid = rec.get("uid")
+            if uid is not None:
+                uid_groups.setdefault(int(uid), []).append(rec)
+
+        # Step 5: pick most severe transcript, map to schema
+        results: dict[str, Any] = {}
+        for uid, records in uid_groups.items():
+            hgvs = uid_to_hgvs.get(uid)
+            if not hgvs:
+                continue
+            best = max(
+                records,
+                key=lambda r: self._OC_IMPACT_RANK.get(str(r.get("impact", "")).upper(), 0)
+            )
+            results[hgvs] = self._map_oc_record(best)
+
+        return results
 
 class DockerVEPAnnotator(BaseVEPAnnotator):
     """
@@ -392,8 +584,8 @@ class VEPAnnotator:
         self.mode = mode
         self.assembly = assembly
         self.engine: BaseVEPAnnotator
-        if mode == "local":
-            self.engine = LocalVEPAnnotator(assembly, vep_path or "vep", vep_data)
+        if mode == "opencravat":
+            self.engine = OpenCRAVATAnnotator(assembly, vep_path or "oc")
         elif mode == "docker":
             self.engine = DockerVEPAnnotator(assembly, vep_path or "ensemblorg/ensembl-vep", vep_data)
         else:
