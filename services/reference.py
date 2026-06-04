@@ -48,7 +48,7 @@ def search_reference(query: str, retmax: int = 20, assembly: str | None = None) 
         try:
             from core.proxy_manager import proxy_manager
             base_url = "https://grch37.rest.ensembl.org" if is_hg19 else "https://rest.ensembl.org"
-            client = proxy_manager.get_client("ensembl")
+            client = proxy_manager.get_client("ensembl", timeout=120.0)
             
             # Lookup symbol to get transcripts
             url = f"{base_url}/lookup/symbol/human/{query}?expand=1"

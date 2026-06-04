@@ -136,7 +136,7 @@ class OnlineVEPAnnotator(BaseVEPAnnotator):
     """
     Advanced genomic variant annotation engine interacting with Ensembl's REST API.
     """
-    def __init__(self, assembly: str = "GRCh38", timeout: float = 30.0):
+    def __init__(self, assembly: str = "GRCh38", timeout: float = 120.0):
         super().__init__(assembly)
         if self.assembly == "GRCh37":
             self.base_url = "https://grch37.rest.ensembl.org"
@@ -294,14 +294,32 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
     def __init__(self, assembly: str = "GRCh38", oc_path: str = "oc"):
         super().__init__(assembly)
         self.oc_path = oc_path
-        self.genome = "hg38" if assembly.upper() == "GRCh38" else "hg19"
+        self.genome = "hg38" if assembly.upper() == "GRCH38" else "hg19"
         self.ensembl_url = (
-            "https://grch37.rest.ensembl.org" if assembly.upper() == "GRCh37"
+            "https://grch37.rest.ensembl.org" if assembly.upper() == "GRCH37"
             else "https://rest.ensembl.org"
         )
-        self.client = proxy_manager.get_client("ensembl")
+        self.client = proxy_manager.get_client("ensembl", timeout=120.0)
         self.headers = {"Content-Type": "application/json", "Accept": "application/json"}
         self._refseq_pattern = re.compile(r'^(NM_|NP_|NC_|NG_)', re.IGNORECASE)
+
+    def _nc_to_chrom(self, nc_ac: str) -> str | None:
+        base = nc_ac.split(".")[0]
+        if not base.startswith("NC_"):
+            return None
+        try:
+            num = int(base.split("_")[1])
+            if 1 <= num <= 22:
+                return str(num)
+            elif num == 23:
+                return "X"
+            elif num == 24:
+                return "Y"
+            elif num == 12920 or num == 1807:
+                return "MT"
+        except (IndexError, ValueError):
+            pass
+        return None
 
     def _recode_to_vcf(self, hgvs_variants: list[str]) -> dict[str, str]:
         """
@@ -327,7 +345,7 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
                 variants_to_send.append(variant)
 
         endpoint = f"{self.ensembl_url}/variant_recoder/human"
-        payload = {"ids": variants_to_send, "fields": "vcf_string"}
+        payload = {"ids": variants_to_send}
         result: dict[str, str] = {}
         retries = 3
 
@@ -346,9 +364,48 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
                         if not sent_id:
                             continue
                         original = id_map.get(sent_id, sent_id)
+                        
+                        vcf_string = None
                         vcf_strings = allele_info.get("vcf_string", [])
-                        if vcf_strings:
-                            result[original] = vcf_strings[0]
+                        if vcf_strings and isinstance(vcf_strings, list):
+                            vcf_string = vcf_strings[0]
+                            
+                        if not vcf_string:
+                            # Fallback 1: Parse from SPDI
+                            spdi_list = allele_info.get("spdi", [])
+                            if spdi_list and isinstance(spdi_list, list):
+                                for s in spdi_list:
+                                    if s.startswith("NC_"):
+                                        parts = s.split(":")
+                                        if len(parts) == 4:
+                                            nc_ac, pos0, ref, alt = parts
+                                            chrom = self._nc_to_chrom(nc_ac)
+                                            if chrom:
+                                                try:
+                                                    pos1 = int(pos0) + 1
+                                                    vcf_string = f"{chrom}:{pos1}:{ref}:{alt}"
+                                                    break
+                                                except ValueError:
+                                                    pass
+                                                    
+                        if not vcf_string:
+                            # Fallback 2: Parse from HGVSG
+                            hgvsg_list = allele_info.get("hgvsg", [])
+                            if hgvsg_list and isinstance(hgvsg_list, list):
+                                for h in hgvsg_list:
+                                    if h.startswith("NC_"):
+                                        match = re.match(r'^(NC_\d+)(?:\.\d+)?:g\.(\d+)([ATGC]*)(?:>([ATGC]*))?$', h, re.IGNORECASE)
+                                        if match:
+                                            nc_ac, pos, ref, alt = match.groups()
+                                            ref = ref or ""
+                                            alt = alt or ""
+                                            chrom = self._nc_to_chrom(nc_ac)
+                                            if chrom:
+                                                vcf_string = f"{chrom}:{pos}:{ref}:{alt}"
+                                                break
+                                                
+                        if vcf_string:
+                            result[original] = vcf_string
                         break
                 break
             except httpx.HTTPError as e:
@@ -401,6 +458,21 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
             raw = json_files[0].read_text().strip()
             try:
                 data = json.loads(raw)
+                if isinstance(data, dict) and "variant" in data and "colinfo" in data:
+                    columns = data["colinfo"].get("variant", {}).get("columns", [])
+                    col_names = [col["col_name"] for col in columns]
+                    records = []
+                    for row in data.get("variant", []):
+                        rec = {}
+                        for i, val in enumerate(row):
+                            if i < len(col_names):
+                                name = col_names[i]
+                                rec[name] = val
+                                if "__" in name:
+                                    short = name.split("__")[1]
+                                    rec[short] = val
+                        records.append(rec)
+                    return records
                 return data if isinstance(data, list) else [data]
             except json.JSONDecodeError:
                 records = []
