@@ -7,6 +7,7 @@ API returns immediately; poll /opencravat/tasks/{task_id} for progress.
 """
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -19,6 +20,36 @@ logger = logging.getLogger(__name__)
 
 # In-memory install/uninstall task registry. Survives for the process lifetime.
 _tasks: dict[str, dict[str, Any]] = {}
+
+
+def init_opencravat(oc_path: str = "oc"):
+    """
+    Initializes OpenCRAVAT by configuring the modules directory to a persistent
+    location inside the /app/storage folder and installing base modules if needed.
+    """
+    if os.path.exists("/app/storage"):
+        target_dir = "/app/storage/open-cravat"
+        os.makedirs(target_dir, exist_ok=True)
+        
+        logger.info(f"Setting OpenCRAVAT modules directory to persistent storage: {target_dir}")
+        rc, out, err = _run("config", "md", target_dir, oc_path=oc_path)
+        if rc != 0:
+            logger.error(f"Failed to configure OpenCRAVAT modules directory: {err}")
+            return
+
+        rc, out, err = _run("module", "ls", oc_path=oc_path)
+        if rc == 0:
+            if "vcf-converter" not in out:
+                logger.info("Initializing OpenCRAVAT base modules (this may take a few seconds)...")
+                rc_base, out_base, err_base = _run("module", "install-base", oc_path=oc_path, timeout=300)
+                if rc_base != 0:
+                    logger.error(f"Failed to run oc module install-base: {err_base}")
+                else:
+                    logger.info("OpenCRAVAT base modules installed successfully.")
+            else:
+                logger.info("OpenCRAVAT base modules are already initialized.")
+        else:
+            logger.warning(f"Could not check OpenCRAVAT modules status: {err}")
 
 _SIZE_PATTERN = re.compile(r"([\d.]+)\s*(B|KB|MB|GB|TB)", re.IGNORECASE)
 _SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
@@ -48,7 +79,7 @@ def _run(
             -1,
             "",
             f"OpenCRAVAT binary not found at '{oc_path}'. "
-            "Install with: pip install open-cravat && oc install-base",
+            "Install with: pip install open-cravat && oc module install-base",
         )
     except subprocess.TimeoutExpired:
         return -1, "", f"Command timed out after {timeout}s"
@@ -80,21 +111,14 @@ def _get_data_dir(oc_path: str) -> str | None:
     return str(default) if default.exists() else None
 
 
-def _parse_module_table(stdout: str, default_installed: bool | None = None) -> list[dict[str, Any]]:
-    """
-    Parse the tabular output of `oc module ls` or `oc module ls -a`.
-
-    OC output columns (order may vary by version):
-        name  version  type  data_size  [yes/no]  title
-    """
-    known_types = {"annotator", "converter", "postaggregator", "reporter", "mapper"}
+def _parse_module_table_fallback(stdout: str, default_installed: bool | None = None) -> list[dict[str, Any]]:
+    known_types = {"annotator", "converter", "postaggregator", "reporter", "mapper", "webviewerwidget"}
     modules: list[dict[str, Any]] = []
 
     for line in stdout.splitlines():
         line = line.strip()
         if not line or re.match(r"^[-=\s]*$", line):
             continue
-        # Skip header lines that contain column labels
         if re.match(r"(?i)^\s*(name|module)\s", line):
             continue
 
@@ -112,19 +136,16 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
             "title": None,
         }
 
-        # Version: first token that looks like a version number
         for p in parts[1:]:
             if re.match(r"^\d[\d.]{1,}", p):
                 mod["version"] = p
                 break
 
-        # Type: known module type keyword
         for p in parts[1:]:
             if p.lower() in known_types:
                 mod["type"] = p.lower()
                 break
 
-        # Installed: explicit yes/no column
         for p in parts[1:]:
             if p.lower() == "yes":
                 mod["installed"] = True
@@ -133,7 +154,6 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
                 mod["installed"] = False
                 break
 
-        # Size: number immediately followed by a unit token
         for i, p in enumerate(parts[:-1]):
             if re.match(r"^[\d.]+$", p) and parts[i + 1].upper() in _SIZE_UNITS:
                 mod["size_bytes"] = _parse_size_bytes(f"{p} {parts[i + 1]}")
@@ -144,12 +164,113 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
     return modules
 
 
+def _parse_module_table(stdout: str, default_installed: bool | None = None) -> list[dict[str, Any]]:
+    """
+    Parse the tabular output of `oc module ls` or `oc module ls -a`.
+    """
+    header = None
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        if re.match(r"(?i)^\s*(name|module)\s", line):
+            header = line
+            break
+            
+    if not header:
+        return _parse_module_table_fallback(stdout, default_installed)
+        
+    lower_header = header.lower()
+    idx_name = lower_header.find("name")
+    idx_title = lower_header.find("title")
+    idx_type = lower_header.find("type")
+    idx_installed = lower_header.find("installed")
+    
+    idx_version = lower_header.find("version")
+    if idx_version == -1:
+        idx_version = lower_header.find("store ver")
+    if idx_version == -1:
+        idx_version = lower_header.find("local ver")
+        
+    idx_size = lower_header.find("size")
+    
+    cols = []
+    if idx_name != -1: cols.append(("name", idx_name))
+    if idx_title != -1: cols.append(("title", idx_title))
+    if idx_type != -1: cols.append(("type", idx_type))
+    if idx_installed != -1: cols.append(("installed", idx_installed))
+    if idx_version != -1: cols.append(("version", idx_version))
+    if idx_size != -1: cols.append(("size", idx_size))
+    
+    cols.sort(key=lambda x: x[1])
+    
+    modules: list[dict[str, Any]] = []
+    
+    for line in stdout.splitlines():
+        if not line.strip() or re.match(r"^[-=\s]*$", line):
+            continue
+        if re.match(r"(?i)^\s*(name|module)\s", line):
+            continue
+            
+        mod: dict[str, Any] = {
+            "name": "",
+            "version": None,
+            "type": None,
+            "size_bytes": None,
+            "installed": default_installed,
+            "title": None,
+        }
+        
+        for i, (col_name, start_idx) in enumerate(cols):
+            end_idx = cols[i+1][1] if i + 1 < len(cols) else len(line)
+            val = line[start_idx:end_idx].strip()
+            
+            if col_name == "name":
+                mod["name"] = val
+            elif col_name == "title":
+                mod["title"] = val if val else None
+            elif col_name == "type":
+                mod["type"] = val if val else None
+            elif col_name == "installed":
+                if val.lower() in ("yes", "installed"):
+                    mod["installed"] = True
+                elif val.lower() == "no":
+                    mod["installed"] = False
+            elif col_name == "version":
+                version_parts = val.split()
+                mod["version"] = version_parts[0] if version_parts else None
+            elif col_name == "size":
+                mod["size_bytes"] = _parse_size_bytes(val)
+                
+        if not mod["name"]:
+            continue
+            
+        if mod["installed"] is None and default_installed is not None:
+            mod["installed"] = default_installed
+        elif mod["installed"] is None and default_installed is None:
+            idx_local = lower_header.find("local ver")
+            if idx_local != -1:
+                idx_local_data = lower_header.find("local data ver")
+                end_local = idx_local_data if idx_local_data != -1 else lower_header.find("size")
+                local_val = line[idx_local:end_local].strip()
+                if local_val:
+                    mod["installed"] = True
+                    mod["version"] = local_val.split()[0] if local_val.split() else mod["version"]
+                else:
+                    mod["installed"] = False
+            else:
+                mod["installed"] = False
+                
+        modules.append(mod)
+        
+    return modules
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def get_status(oc_path: str = "oc") -> dict[str, Any]:
-    rc, version_out, err = _run("--version", oc_path=oc_path)
+    rc, version_out, err = _run("version", oc_path=oc_path)
     if rc != 0:
         return {"installed": False, "error": err}
 
@@ -230,3 +351,8 @@ def uninstall_module(module_name: str, oc_path: str = "oc") -> dict[str, Any]:
         logger.info(f"OpenCRAVAT module '{module_name}' uninstalled")
         return {"success": True, "error": None}
     return {"success": False, "error": stderr}
+
+
+def list_tasks() -> list[dict[str, Any]]:
+    """Returns all registered installation tasks."""
+    return list(_tasks.values())

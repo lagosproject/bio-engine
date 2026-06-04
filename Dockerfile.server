@@ -22,7 +22,8 @@ WORKDIR /app
 
 # Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir python-multipart
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir python-multipart open-cravat
 
 # Copy the rest of the application
 COPY . .

@@ -43,7 +43,6 @@ class TracyConfig(BaseModel):
 class VepMode(str, Enum):
     ONLINE = "online"
     OPENCRAVAT = "opencravat"
-    DOCKER = "docker"
 
 class HGVSConfig(BaseModel):
     transcript: str | None = None
@@ -54,6 +53,15 @@ class HGVSConfig(BaseModel):
     vep_mode: VepMode = VepMode.ONLINE
     vep_path: str | None = None
     vep_data: str | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_vep_mode(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            vep_mode = data.get("vep_mode")
+            if vep_mode in ("local", "docker"):
+                data["vep_mode"] = "opencravat"
+        return data
 
 class JobStatus(str, Enum):
     CREATED = "created"

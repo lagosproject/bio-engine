@@ -286,7 +286,7 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
     every field from every installed annotator — new databases are picked up
     automatically without code changes.
 
-    Requires: pip install open-cravat && oc install-base
+    Requires: pip install open-cravat && oc module install-base
     """
 
     _OC_IMPACT_RANK = {"HIGH": 4, "MODERATE": 3, "LOW": 2, "MODIFIER": 1}
@@ -385,7 +385,7 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
             except FileNotFoundError:
                 logging.error(
                     f"OpenCRAVAT binary not found at '{self.oc_path}'. "
-                    "Install with: pip install open-cravat && oc install-base"
+                    "Install with: pip install open-cravat && oc module install-base"
                 )
                 return []
 
@@ -586,8 +586,6 @@ class VEPAnnotator:
         self.engine: BaseVEPAnnotator
         if mode == "opencravat":
             self.engine = OpenCRAVATAnnotator(assembly, vep_path or "oc")
-        elif mode == "docker":
-            self.engine = DockerVEPAnnotator(assembly, vep_path or "ensemblorg/ensembl-vep", vep_data)
         else:
             self.engine = OnlineVEPAnnotator(assembly)
 

@@ -58,6 +58,17 @@ if getattr(sys, 'frozen', False):
 
 app = FastAPI(title="Bio-Engine Sidecar")
 
+@app.on_event("startup")
+def startup_event():
+    """
+    FastAPI startup event to configure and initialize OpenCRAVAT if available.
+    """
+    try:
+        from services.opencravat import init_opencravat
+        init_opencravat(oc_path=settings.oc_path)
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenCRAVAT on startup: {e}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

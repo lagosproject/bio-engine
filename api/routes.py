@@ -786,6 +786,14 @@ def oc_install_module(module_name: str):
     return oc_service.get_task(task_id)
 
 
+@router.get("/opencravat/tasks", response_model=list[OCInstallTask])
+def oc_list_tasks():
+    """
+    Returns all registered OpenCRAVAT module installation tasks.
+    """
+    return oc_service.list_tasks()
+
+
 @router.get("/opencravat/tasks/{task_id}", response_model=OCInstallTask)
 def oc_get_task(task_id: str):
     """
@@ -806,3 +814,11 @@ def oc_uninstall_module(module_name: str):
     """
     from core.config import settings
     return oc_service.uninstall_module(module_name, oc_path=settings.oc_path)
+
+
+@router.get("/version")
+def get_version():
+    """
+    Returns the version of the bio-engine.
+    """
+    return {"version": "0.8.0"}
