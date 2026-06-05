@@ -299,7 +299,7 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
             "https://grch37.rest.ensembl.org" if assembly.upper() == "GRCH37"
             else "https://rest.ensembl.org"
         )
-        self.client = proxy_manager.get_client("ensembl", timeout=120.0)
+        self.client = proxy_manager.get_client("ensembl", timeout=15.0)
         self.headers = {"Content-Type": "application/json", "Accept": "application/json"}
         self._refseq_pattern = re.compile(r'^(NM_|NP_|NC_|NG_)', re.IGNORECASE)
 
@@ -363,7 +363,7 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
                 variants_to_send.append(variant)
 
         endpoint = f"{self.ensembl_url}/variant_recoder/human"
-        chunk_size = 2
+        chunk_size = 100
         chunks = [variants_to_send[i:i + chunk_size] for i in range(0, len(variants_to_send), chunk_size)]
 
         def recode_chunk(chunk):
