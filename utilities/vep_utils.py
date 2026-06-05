@@ -719,7 +719,7 @@ class VEPAnnotator:
         missing = []
 
         # 1. Check Global Cache (using MGET for efficiency)
-        cache_keys = {f"vep:{self.assembly}:{v}": v for v in hgvs_variants}
+        cache_keys = {f"vep:{self.mode}:{self.assembly}:{v}": v for v in hgvs_variants}
         cached_data_map = cache.get_many(list(cache_keys.keys()))
 
         for key, variant in cache_keys.items():
@@ -739,7 +739,7 @@ class VEPAnnotator:
         if new_annotations:
             new_cache_entries = {}
             for variant, data in new_annotations.items():
-                cache_key = f"vep:{self.assembly}:{variant}"
+                cache_key = f"vep:{self.mode}:{self.assembly}:{variant}"
                 new_cache_entries[cache_key] = data
                 results[variant] = data
             
