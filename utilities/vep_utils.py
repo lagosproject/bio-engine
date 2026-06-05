@@ -329,11 +329,29 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
         if not hgvs_variants:
             return {}
 
-        # NG_ → LRG_ pre-processing (same logic as OnlineVEPAnnotator)
+        result: dict[str, str] = {}
+        
+        # 1. Check Redis cache first
+        from core.cache import cache
+        cache_keys = {f"vcf_recode:{self.assembly}:{v}": v for v in hgvs_variants}
+        cached_data_map = cache.get_many(list(cache_keys.keys()))
+        
+        variants_to_process = []
+        for key, variant in cache_keys.items():
+            cached_val = cached_data_map.get(key)
+            if cached_val:
+                result[variant] = cached_val
+            else:
+                variants_to_process.append(variant)
+                
+        if not variants_to_process:
+            return result
+
+        # 2. Build the LRG mapping and id map
         variants_to_send: list[str] = []
         id_map: dict[str, str] = {}  # sent_id → original_hgvs
 
-        for variant in hgvs_variants:
+        for variant in variants_to_process:
             ac = variant.split(':')[0] if ':' in variant else variant
             if ac.startswith("NG_"):
                 lrg = get_lrg_mapping(ac)
@@ -345,78 +363,99 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
                 variants_to_send.append(variant)
 
         endpoint = f"{self.ensembl_url}/variant_recoder/human"
-        payload = {"ids": variants_to_send}
-        result: dict[str, str] = {}
-        retries = 3
+        chunk_size = 2
+        chunks = [variants_to_send[i:i + chunk_size] for i in range(0, len(variants_to_send), chunk_size)]
 
-        for attempt in range(retries):
-            try:
-                response = self.client.post(endpoint, json=payload, headers=self.headers)
-                if response.status_code == 429:
-                    time.sleep(int(response.headers.get("Retry-After", 2)))
-                    continue
-                response.raise_for_status()
-                for item in response.json():
-                    for allele_info in item.values():
-                        if not isinstance(allele_info, dict):
-                            continue
-                        sent_id = allele_info.get("input")
-                        if not sent_id:
-                            continue
-                        original = id_map.get(sent_id, sent_id)
-                        
-                        vcf_string = None
-                        vcf_strings = allele_info.get("vcf_string", [])
-                        if vcf_strings and isinstance(vcf_strings, list):
-                            vcf_string = vcf_strings[0]
+        def recode_chunk(chunk):
+            payload = {"ids": chunk}
+            retries = 3
+            chunk_results = {}
+            for attempt in range(retries):
+                try:
+                    response = self.client.post(endpoint, json=payload, headers=self.headers)
+                    if response.status_code == 429:
+                        time.sleep(int(response.headers.get("Retry-After", 2)))
+                        continue
+                    response.raise_for_status()
+                    for item in response.json():
+                        for allele_info in item.values():
+                            if not isinstance(allele_info, dict):
+                                continue
+                            sent_id = allele_info.get("input")
+                            if not sent_id:
+                                continue
+                            original = id_map.get(sent_id, sent_id)
                             
-                        if not vcf_string:
-                            # Fallback 1: Parse from SPDI
-                            spdi_list = allele_info.get("spdi", [])
-                            if spdi_list and isinstance(spdi_list, list):
-                                for s in spdi_list:
-                                    if s.startswith("NC_"):
-                                        parts = s.split(":")
-                                        if len(parts) == 4:
-                                            nc_ac, pos0, ref, alt = parts
-                                            chrom = self._nc_to_chrom(nc_ac)
-                                            if chrom:
-                                                try:
-                                                    pos1 = int(pos0) + 1
-                                                    vcf_string = f"{chrom}:{pos1}:{ref}:{alt}"
+                            vcf_string = None
+                            vcf_strings = allele_info.get("vcf_string", [])
+                            if vcf_strings and isinstance(vcf_strings, list):
+                                vcf_string = vcf_strings[0]
+                                
+                            if not vcf_string:
+                                # Fallback 1: Parse from SPDI
+                                spdi_list = allele_info.get("spdi", [])
+                                if spdi_list and isinstance(spdi_list, list):
+                                    for s in spdi_list:
+                                        if s.startswith("NC_"):
+                                            parts = s.split(":")
+                                            if len(parts) == 4:
+                                                nc_ac, pos0, ref, alt = parts
+                                                chrom = self._nc_to_chrom(nc_ac)
+                                                if chrom:
+                                                    try:
+                                                        pos1 = int(pos0) + 1
+                                                        vcf_string = f"{chrom}:{pos1}:{ref}:{alt}"
+                                                        break
+                                                    except ValueError:
+                                                        pass
+                                                        
+                            if not vcf_string:
+                                # Fallback 2: Parse from HGVSG
+                                hgvsg_list = allele_info.get("hgvsg", [])
+                                if hgvsg_list and isinstance(hgvsg_list, list):
+                                    for h in hgvsg_list:
+                                        if h.startswith("NC_"):
+                                            match = re.match(r'^(NC_\d+)(?:\.\d+)?:g\.(\d+)([ATGC]*)(?:>([ATGC]*))?$', h, re.IGNORECASE)
+                                            if match:
+                                                nc_ac, pos, ref, alt = match.groups()
+                                                ref = ref or ""
+                                                alt = alt or ""
+                                                chrom = self._nc_to_chrom(nc_ac)
+                                                if chrom:
+                                                    vcf_string = f"{chrom}:{pos}:{ref}:{alt}"
                                                     break
-                                                except ValueError:
-                                                    pass
                                                     
-                        if not vcf_string:
-                            # Fallback 2: Parse from HGVSG
-                            hgvsg_list = allele_info.get("hgvsg", [])
-                            if hgvsg_list and isinstance(hgvsg_list, list):
-                                for h in hgvsg_list:
-                                    if h.startswith("NC_"):
-                                        match = re.match(r'^(NC_\d+)(?:\.\d+)?:g\.(\d+)([ATGC]*)(?:>([ATGC]*))?$', h, re.IGNORECASE)
-                                        if match:
-                                            nc_ac, pos, ref, alt = match.groups()
-                                            ref = ref or ""
-                                            alt = alt or ""
-                                            chrom = self._nc_to_chrom(nc_ac)
-                                            if chrom:
-                                                vcf_string = f"{chrom}:{pos}:{ref}:{alt}"
-                                                break
-                                                
-                        if vcf_string:
-                            result[original] = vcf_string
-                        break
-                break
-            except httpx.HTTPError as e:
-                logging.error(f"VCF recoding attempt {attempt + 1} failed: {e}")
-                if attempt < retries - 1:
-                    time.sleep(2)
+                            if vcf_string:
+                                chunk_results[original] = vcf_string
+                            break
+                    return chunk_results
+                except httpx.HTTPError as e:
+                    logging.error(f"VCF recoding attempt {attempt + 1} failed for chunk {chunk}: {e}")
+                    if attempt < retries - 1:
+                        time.sleep(2)
+            return chunk_results
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        new_results = {}
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_chunk = {executor.submit(recode_chunk, chunk): chunk for chunk in chunks}
+            for future in as_completed(future_to_chunk):
+                try:
+                    chunk_res = future.result()
+                    new_results.update(chunk_res)
+                except Exception as e:
+                    logging.error(f"Failed to process chunk: {e}")
+
+        # Store new results in cache
+        if new_results:
+            new_cache_entries = {f"vcf_recode:{self.assembly}:{variant}": val for variant, val in new_results.items()}
+            cache.set_many(new_cache_entries)
+            result.update(new_results)
 
         return result
 
     def _run_opencravat(self, input_lines: list[str]) -> list[dict[str, Any]]:
-        """Write OC input file, run oc run, return parsed variant JSON records."""
+        """Write OC input file, run oc run, return parsed variant records from SQLite database."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             input_path = Path(tmp_dir) / "variants.txt"
             input_path.write_text("\n".join(input_lines))
@@ -424,9 +463,19 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
             cmd = [
                 self.oc_path, "run", str(input_path),
                 "-l", self.genome,
-                "-t", "json",
                 "-d", tmp_dir,
             ]
+
+            # Get installed annotators to ensure they are all run (e.g. clinvar)
+            try:
+                from services.opencravat import list_installed
+                installed = list_installed(oc_path=self.oc_path)
+                annotators = [m["name"] for m in installed if m.get("type") == "annotator"]
+                if annotators:
+                    cmd.extend(["-a"] + annotators)
+            except Exception as e:
+                logging.warning(f"Could not list installed OpenCRAVAT annotators: {e}")
+
             logging.info(f"Running OpenCRAVAT: {' '.join(cmd)}")
 
             try:
@@ -446,44 +495,45 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
                 )
                 return []
 
-            # OC writes {basename}.variant.json for the variant-level output
-            json_files = sorted(Path(tmp_dir).glob("*.variant.json"))
-            if not json_files:
-                json_files = sorted(f for f in Path(tmp_dir).glob("*.json")
-                                    if "gene" not in f.name)
-            if not json_files:
-                logging.error("No JSON output produced by OpenCRAVAT")
+            # Locate the generated SQLite database
+            sqlite_files = sorted(Path(tmp_dir).glob("*.sqlite"))
+            if not sqlite_files:
+                logging.error("No SQLite database produced by OpenCRAVAT")
                 return []
 
-            raw = json_files[0].read_text().strip()
+            db_path = sqlite_files[0]
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
             try:
-                data = json.loads(raw)
-                if isinstance(data, dict) and "variant" in data and "colinfo" in data:
-                    columns = data["colinfo"].get("variant", {}).get("columns", [])
-                    col_names = [col["col_name"] for col in columns]
-                    records = []
-                    for row in data.get("variant", []):
-                        rec = {}
-                        for i, val in enumerate(row):
-                            if i < len(col_names):
-                                name = col_names[i]
-                                rec[name] = val
-                                if "__" in name:
-                                    short = name.split("__")[1]
-                                    rec[short] = val
-                        records.append(rec)
-                    return records
-                return data if isinstance(data, list) else [data]
-            except json.JSONDecodeError:
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='variant'")
+                if not cursor.fetchone():
+                    logging.error("No 'variant' table found in OpenCRAVAT SQLite database")
+                    return []
+                
+                cursor.execute("SELECT * FROM variant")
+                rows = cursor.fetchall()
+                if not rows:
+                    return []
+                
+                colnames = [description[0] for description in cursor.description]
                 records = []
-                for line in raw.splitlines():
-                    line = line.strip()
-                    if line:
-                        try:
-                            records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
+                for row in rows:
+                    rec = {}
+                    for colname in colnames:
+                        val = row[colname]
+                        rec[colname] = val
+                        if "__" in colname:
+                            short = colname.split("__")[1]
+                            rec[short] = val
+                    records.append(rec)
                 return records
+            except Exception as e:
+                logging.error(f"Failed to read variants from OpenCRAVAT SQLite database: {e}")
+                return []
+            finally:
+                conn.close()
 
     def _map_oc_record(self, record: dict[str, Any]) -> dict[str, Any]:
         """

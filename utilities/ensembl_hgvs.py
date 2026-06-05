@@ -14,7 +14,7 @@ class EnsemblHGVS:
     Optimized for batch operations.
     """
     @staticmethod
-    def format_hgvs(ac: str, hgvs_type: str, pos: int, ref: str, alt: str) -> str:
+    def format_hgvs(ac: str, hgvs_type: str, pos: int, ref: str, alt: str, cds_start: int = 0, cds_end: int | None = None) -> str:
         """
         Formats a primary HGVS string.
         Optimized to identify pure deletions/insertions by stripping common prefixes/suffixes.
@@ -30,22 +30,33 @@ class EnsemblHGVS:
             ref = ref[:-1]
             alt = alt[:-1]
 
+        def to_hgvs_pos(p: int) -> str:
+            if hgvs_type == 'c':
+                if p > cds_start:
+                    if cds_end is not None and p > cds_end:
+                        return f"*{p - cds_end}"
+                    else:
+                        return str(p - cds_start)
+                else:
+                    return f"-{cds_start + 1 - p}"
+            return str(p)
+
         # Now handle the reduced cases
         if not ref and not alt:
-            return f"{ac}:{hgvs_type}.{pos}=" # No change
+            return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}=" # No change
         
         if len(ref) == 1 and len(alt) == 1:
-            return f"{ac}:{hgvs_type}.{pos}{ref}>{alt}"
+            return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}{ref}>{alt}"
         elif not ref: # Insertion
             # HGVS insertion notation: pos_pos+1ins
             # After stripping, 'pos' is the base after the insertion point
-            return f"{ac}:{hgvs_type}.{pos-1}_{pos}ins{alt}"
+            return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos-1)}_{to_hgvs_pos(pos)}ins{alt}"
         elif not alt: # Deletion
             if len(ref) == 1:
-                return f"{ac}:{hgvs_type}.{pos}del"
-            return f"{ac}:{hgvs_type}.{pos}_{pos+len(ref)-1}del"
+                return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}del"
+            return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}_{to_hgvs_pos(pos+len(ref)-1)}del"
         else: # delins
-            return f"{ac}:{hgvs_type}.{pos}_{pos+len(ref)-1}delins{alt}"
+            return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}_{to_hgvs_pos(pos+len(ref)-1)}delins{alt}"
 
     def __init__(self, assembly: str = "GRCh38", timeout: float = 120.0):
         self.assembly = assembly.upper()

@@ -106,6 +106,12 @@ def process_job_background(job_id: str):
             logger.error(f"Background Job {job_id} not found")
             return
 
+        # Clear existing results, annotations, and alternatives for a fresh run
+        job.results = []
+        job.vep_annotations = {}
+        job.hgvs_alternatives = {}
+        job_manager._save_job(job)
+
         # Resolve Reference
         ref_input = job.reference.get("value") if isinstance(job.reference, dict) else getattr(job.reference, "value", None)
         assembly = job.hgvs_config.assembly if job.hgvs_config else "GRCh38"

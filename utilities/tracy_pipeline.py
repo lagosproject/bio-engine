@@ -217,17 +217,40 @@ class TracyPipeline:
                 elif source_ac.startswith(('NC_', 'NG_', 'NW_', 'NT_')): h_type = 'g'
                 else: h_type = 'n'
                 
+                # Retrieve CDS boundaries if coding transcript
+                cds_start = 0
+                cds_end = None
+                if h_type == 'c':
+                    try:
+                        from services.reference import get_reference_features
+                        features = get_reference_features(source_ac)
+                        for f in features:
+                            if f.get("type") == "CDS":
+                                cds_start = f.get("start", 0)
+                                cds_end = f.get("end", None)
+                                break
+                    except Exception as fe:
+                        logger.error(f"Failed to fetch reference features for CDS mapping: {fe}")
+                
                 for row in rows:
-                    if len(row) <= hgvs_idx or not row[hgvs_idx]:
-                        try:
-                            # Generate local primary HGVS
-                            primary = EnsemblHGVS.format_hgvs(source_ac, h_type, int(row[pos_idx]), row[ref_idx], row[alt_idx])
-                            if len(row) < len(header):
-                                row.append(primary)
-                            else:
-                                row[hgvs_idx] = primary
-                        except:
-                            if len(row) < len(header): row.append("")
+                    try:
+                        # Generate local primary HGVS
+                        primary = EnsemblHGVS.format_hgvs(
+                            source_ac, 
+                            h_type, 
+                            int(row[pos_idx]), 
+                            row[ref_idx], 
+                            row[alt_idx],
+                            cds_start=cds_start,
+                            cds_end=cds_end
+                        )
+                        if len(row) < len(header):
+                            row.append(primary)
+                        else:
+                            row[hgvs_idx] = primary
+                    except Exception as e:
+                        logger.error(f"Failed to format HGVS: {e}")
+                        if len(row) < len(header): row.append("")
             else:
                 for row in rows:
                     if len(row) < len(header):
