@@ -347,6 +347,25 @@ class OpenCRAVATAnnotator(BaseVEPAnnotator):
         if not variants_to_process:
             return result
 
+        # 1.5. Local parsing for genomic HGVS (NC_) to completely bypass Ensembl API
+        for variant in list(variants_to_process):
+            if variant.startswith("NC_"):
+                match = re.match(r'^(NC_\d+)(?:\.\d+)?:g\.(\d+)([ATGC]*)(?:>([ATGC]*))?$', variant, re.IGNORECASE)
+                if match:
+                    nc_ac, pos, ref, alt = match.groups()
+                    ref = ref or ""
+                    alt = alt or ""
+                    chrom = self._nc_to_chrom(nc_ac)
+                    if chrom:
+                        vcf_string = f"{chrom}:{pos}:{ref}:{alt}"
+                        result[variant] = vcf_string
+                        # Save in cache
+                        cache.set(f"vcf_recode:{self.assembly}:{variant}", vcf_string)
+                        variants_to_process.remove(variant)
+
+        if not variants_to_process:
+            return result
+
         # 2. Build the LRG mapping and id map
         variants_to_send: list[str] = []
         id_map: dict[str, str] = {}  # sent_id → original_hgvs
