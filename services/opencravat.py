@@ -27,6 +27,27 @@ def init_opencravat(oc_path: str = "oc"):
     Initializes OpenCRAVAT by configuring the modules directory to a persistent
     location inside the /app/storage folder and installing base modules if needed.
     """
+    # Programmatically opt out of OpenCRAVAT metrics/funding email prompts to prevent hangs in CLI execution
+    try:
+        import yaml
+        rc, out, err = _run("config", "system", oc_path=oc_path)
+        if rc == 0:
+            match = re.search(r"Configuration file path:\s*(.*)", out)
+            if match:
+                config_path = match.group(1).strip()
+                if os.path.exists(config_path):
+                    with open(config_path, "r") as f:
+                        config_data = yaml.safe_load(f) or {}
+                    if not config_data.get("user_email_opt_out") or config_data.get("save_metrics") is not False:
+                        config_data["user_email"] = "no-email"
+                        config_data["user_email_opt_out"] = True
+                        config_data["save_metrics"] = False
+                        with open(config_path, "w") as f:
+                            yaml.safe_dump(config_data, f)
+                        logger.info(f"Successfully opted out of OpenCRAVAT metrics in {config_path}")
+    except Exception as e:
+        logger.warning(f"Could not programmatically opt-out of OpenCRAVAT metrics: {e}")
+
     if os.path.exists("/app/storage"):
         target_dir = "/app/storage/open-cravat"
         os.makedirs(target_dir, exist_ok=True)
