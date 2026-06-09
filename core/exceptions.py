@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 class BioEngineError(Exception):
     """Base exception for the bio-engine."""
     def __init__(self, message: str, context: str = "processing"):

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Bio-Engine Sidecar Entry Point
 ==============================

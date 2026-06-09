@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 import logging
 """
 Persistence Management Module

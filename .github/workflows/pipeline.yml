@@ -91,6 +91,8 @@ jobs:
     needs: build-linux
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -105,12 +107,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest pytest-cov
 
-      - name: Run Generic pysam Verification
-        run: python tests/test_linux_pysam.py
+      - name: Run Tests with pytest and coverage
+        run: |
+          PYTHONPATH=. pytest
 
-      - name: Run RYR1 Gene search and pysam Indexing Test
-        run: python tests/test_ryr1_pysam.py
+      - name: Generate Coverage Badge
+        uses: tj-actions/coverage-badge-py@v2
+        with:
+          output: coverage.svg
+
+      - name: Verify Changed files
+        uses: tj-actions/verify-changed-files@v20
+        id: verify-changed-files
+        with:
+          files: coverage.svg
+
+      - name: Commit and push coverage badge
+        if: steps.verify-changed-files.outputs.files_changed == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add coverage.svg
+          git commit -m "chore: update coverage badge"
+          git push
 
   test-windows:
     name: Verify Windows (Binaries)

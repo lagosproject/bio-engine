@@ -1,8 +1,10 @@
+# SPDX-License-Identifier: MIT
 import os
 import sys
 import tempfile
 import subprocess
 import logging
+import pytest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -10,8 +12,7 @@ logger = logging.getLogger(__name__)
 def test_bgzip():
     bgzip_path = os.environ.get("BIO_BGZIP_PATH")
     if not bgzip_path:
-        logger.error("BIO_BGZIP_PATH must be set for this test")
-        sys.exit(1)
+        pytest.skip("BIO_BGZIP_PATH must be set for this test")
         
     logger.info(f"Testing bgzip at: {bgzip_path}")
     

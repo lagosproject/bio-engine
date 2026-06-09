@@ -43,3 +43,7 @@ quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
+
+[tool.pytest.ini_options]
+addopts = "--cov=api --cov=core --cov=services --cov=utilities --cov-report=term-missing --cov-report=xml"
+testpaths = ["tests"]

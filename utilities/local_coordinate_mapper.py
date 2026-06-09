@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 import os
 import re
 import sqlite3

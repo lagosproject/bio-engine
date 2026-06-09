@@ -1,9 +1,12 @@
+# SPDX-License-Identifier: MIT
 import os
 import sys
 import logging
 import shutil
 import tempfile
 import subprocess
+
+import pytest
 
 # Add the project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +18,7 @@ from core.config import settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows binary test only runs on Windows")
 def test_windows_binary_functionality():
     logger.info(f"OS: {sys.platform}")
     logger.info(f"bgzip_path: {settings.bgzip_path}")

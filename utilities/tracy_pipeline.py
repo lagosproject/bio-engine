@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """
 Tracy Alignment Engine Wrapper
 ==============================

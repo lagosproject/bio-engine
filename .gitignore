@@ -16,3 +16,4 @@ pyrefly.toml
 debug/
 .env
 *.env
+coverage.xml
