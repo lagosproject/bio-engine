@@ -738,14 +738,39 @@ class VEPAnnotator:
         results = {}
         missing = []
 
-        # 1. Check Global Cache (using MGET for efficiency)
-        cache_keys = {f"vep:{self.mode}:{self.assembly}:{v}": v for v in hgvs_variants}
-        cached_data_map = cache.get_many(list(cache_keys.keys()))
+        # Query both online and opencravat keys in cache to aggregate them
+        other_mode = "online" if self.mode == "opencravat" else "opencravat"
+        
+        primary_keys = {f"vep:{self.mode}:{self.assembly}:{v}": v for v in hgvs_variants}
+        secondary_keys = {f"vep:{other_mode}:{self.assembly}:{v}": v for v in hgvs_variants}
+        
+        all_keys = list(primary_keys.keys()) + list(secondary_keys.keys())
+        cached_data_map = cache.get_many(all_keys)
 
-        for key, variant in cache_keys.items():
-            cached_data = cached_data_map.get(key)
-            if cached_data:
-                results[variant] = cached_data
+        for variant in hgvs_variants:
+            prim_key = f"vep:{self.mode}:{self.assembly}:{variant}"
+            sec_key = f"vep:{other_mode}:{self.assembly}:{variant}"
+            
+            prim_data = cached_data_map.get(prim_key)
+            sec_data = cached_data_map.get(sec_key)
+            
+            if prim_data:
+                if sec_data:
+                    # Determine which is OpenCRAVAT and which is online VEP
+                    oc_anno = prim_data if self.mode == "opencravat" else sec_data
+                    online_anno = sec_data if self.mode == "opencravat" else prim_data
+                    
+                    merged = {**oc_anno}
+                    for k, v in online_anno.items():
+                        if k == "vep_raw":
+                            merged["vep_raw"] = v
+                        elif k in ("clin_sig", "phenotype"):
+                            merged[k] = sorted(list(set(merged.get(k, []) + (v or []))))
+                        elif v:
+                            merged[k] = v
+                    results[variant] = merged
+                else:
+                    results[variant] = prim_data
             else:
                 missing.append(variant)
 
@@ -761,7 +786,24 @@ class VEPAnnotator:
             for variant, data in new_annotations.items():
                 cache_key = f"vep:{self.mode}:{self.assembly}:{variant}"
                 new_cache_entries[cache_key] = data
-                results[variant] = data
+                
+                # Check if there was other mode data to merge for this newly fetched annotation
+                sec_key = f"vep:{other_mode}:{self.assembly}:{variant}"
+                sec_data = cached_data_map.get(sec_key)
+                if sec_data:
+                    oc_anno = data if self.mode == "opencravat" else sec_data
+                    online_anno = sec_data if self.mode == "opencravat" else data
+                    merged = {**oc_anno}
+                    for k, v in online_anno.items():
+                        if k == "vep_raw":
+                            merged["vep_raw"] = v
+                        elif k in ("clin_sig", "phenotype"):
+                            merged[k] = sorted(list(set(merged.get(k, []) + (v or []))))
+                        elif v:
+                            merged[k] = v
+                    results[variant] = merged
+                else:
+                    results[variant] = data
             
             cache.set_many(new_cache_entries)
 

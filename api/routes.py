@@ -28,6 +28,7 @@ from data.models import (
     ShareJobRequest,
     UpdateJobRequest,
     ProxyConfigRequest,
+    OpenCravatConfigRequest,
     UpdateVariantStatusRequest,
     ApproveVariantRequest,
     HotspotPoint,
@@ -340,6 +341,16 @@ def configure_proxy(request: ProxyConfigRequest):
         "http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"), 
         "https_proxy": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     }
+
+@router.post("/config/opencravat")
+def configure_opencravat(request: OpenCravatConfigRequest):
+    """
+    Dynamically configures the global OpenCRAVAT executable path for the engine.
+    """
+    from core.config import settings
+    if request.oc_path is not None:
+        settings.oc_path = request.oc_path if request.oc_path != "" else "oc"
+    return {"status": "success", "oc_path": settings.oc_path}
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):

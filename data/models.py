@@ -273,6 +273,9 @@ class ProxyConfigRequest(BaseModel):
     http_proxy: str | None = None
     https_proxy: str | None = None
 
+class OpenCravatConfigRequest(BaseModel):
+    oc_path: str | None = None
+
 class ApproveVariantRequest(BaseModel):
     chromosome: str
     position: int
