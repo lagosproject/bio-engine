@@ -1,5 +1,17 @@
 # Production Dockerfile for Bio-Engine Server
-FROM python:3.10-slim-bullseye
+FROM mirror.gcr.io/library/python:3.10-bullseye
+
+# Build-time proxy ARGs
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy=$HTTP_PROXY
+ARG https_proxy=$HTTPS_PROXY
+ARG no_proxy=$NO_PROXY
+
+# Copy custom CA certificates if any are provided (e.g. for HTTPS inspection proxy)
+COPY certs/ /usr/local/share/ca-certificates/
+RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates
 
 # Install bioinformatics tools and system dependencies
 RUN apt-get update && apt-get install -y \

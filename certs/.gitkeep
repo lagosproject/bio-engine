@@ -1,0 +1,2 @@
+# Placeholder to ensure this directory is tracked by git and always copied into the Docker image.
+# Place any custom CA certificates (.crt extension) for corporate proxy SSL inspection here.
