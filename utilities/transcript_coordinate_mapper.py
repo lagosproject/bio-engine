@@ -13,10 +13,10 @@ exon structure is sourced once from the UCSC ``ncbiRefSeq`` table (~7 MB), built
 into a small SQLite database, and then every variant resolves locally with zero
 network calls.
 
-Only clean single-nucleotide substitutions with a plain integer ``c.``/``n.``
-position are resolved locally; intronic offsets (``c.123+4``), UTR (``c.-5``,
-``c.*7``), ranges and indels return ``None`` so the caller falls back to the
-existing network paths. This mirrors the conservative policy of the NG_ path.
+Only clean single-nucleotide substitutions are resolved locally: coding
+(``c.123``), 5'UTR (``c.-5``), 3'UTR (``c.*7``) and non-coding (``n.123``)
+positions. Intronic offsets (``c.123+4``), ranges and indels return ``None`` so
+the caller falls back to the existing network paths (conservative, like NG_).
 """
 from __future__ import annotations
 
@@ -37,9 +37,11 @@ _URLS = {
 
 _COMP = str.maketrans("ACGTacgt", "TGCAtgca")
 
-# NM_000540.3:c.7300G>A  /  NR_...:n.123A>G   (clean SNV only)
+# Clean SNV only. Position token is coding (123), 5'UTR (-5), 3'UTR (*7) or
+# non-coding (n.123). Intronic offsets (123+4 / 123-4 / *7+1) do not match the
+# token and are therefore left to the network fallback.
 _TX_SUB_RE = re.compile(
-    r'^((?:NM|NR|XM|XR)_\d+)(?:\.\d+)?:([cn])\.(\d+)([ACGT])>([ACGT])$', re.IGNORECASE)
+    r'^((?:NM|NR|XM|XR)_\d+)(?:\.\d+)?:([cn])\.(-?\d+|\*\d+)([ACGT])>([ACGT])$', re.IGNORECASE)
 
 _PRIMARY_CHROM_RE = re.compile(r'^chr(\d+|X|Y|M)$')
 
@@ -128,8 +130,20 @@ class TranscriptCoordinateMapper:
         return idx
 
     @staticmethod
+    def _cds_length(exons, cds_start, cds_end):
+        """Number of coding (CDS) exonic bases across all exons."""
+        total = 0
+        for s, e in exons:
+            a, b = max(s, cds_start), min(e, cds_end)
+            if b > a:
+                total += b - a
+        return total
+
+    @staticmethod
     def _exonic_to_genomic(exons, strand, k):
         """0-based genomic position of the k-th exonic base in transcript order."""
+        if k < 0:
+            return None
         if strand == "+":
             for s, e in exons:                 # ascending
                 if k < e - s:
@@ -146,8 +160,11 @@ class TranscriptCoordinateMapper:
         m = _TX_SUB_RE.match(variant)
         if not m:
             return None
-        name, kind, pos, ref, alt = (
-            m.group(1), m.group(2).lower(), int(m.group(3)), m.group(4).upper(), m.group(5).upper())
+        name, kind, pos_tok, ref, alt = (
+            m.group(1), m.group(2).lower(), m.group(3), m.group(4).upper(), m.group(5).upper())
+        # UTR markers only make sense for coding transcripts.
+        if kind == "n" and not pos_tok.isdigit():
+            return None
 
         try:
             conn = self._get_connection()
@@ -163,10 +180,16 @@ class TranscriptCoordinateMapper:
             exons = sorted(zip(starts, ends))   # ascending genomic
 
             if kind == "c":
-                base_idx = self._cds_start_exonic_index(exons, strand, cds_start, cds_end)
-                exonic_index = base_idx + (pos - 1)
+                cds_start_idx = self._cds_start_exonic_index(exons, strand, cds_start, cds_end)
+                if pos_tok.startswith("-"):        # 5'UTR: c.-N, N bases 5' of c.1
+                    exonic_index = cds_start_idx - int(pos_tok[1:])
+                elif pos_tok.startswith("*"):      # 3'UTR: c.*N, N bases 3' of stop
+                    last_coding = cds_start_idx + self._cds_length(exons, cds_start, cds_end) - 1
+                    exonic_index = last_coding + int(pos_tok[1:])
+                else:                               # coding: c.N
+                    exonic_index = cds_start_idx + (int(pos_tok) - 1)
             else:  # n.
-                exonic_index = pos - 1
+                exonic_index = int(pos_tok) - 1
 
             g0 = self._exonic_to_genomic(exons, strand, exonic_index)
             if g0 is None:

@@ -79,13 +79,38 @@ class TestTranscriptCoordinateMapper(unittest.TestCase):
     def test_version_stripped(self):
         self.assertEqual(self.r("NM_000001:c.1A>G"), "1:1004:A:G")
 
-    # --- conservative: anything but a clean SNV -> None (network fallback) ---
+    # --- 5'UTR (c.-N): N bases 5' of c.1 ---
+    def test_plus_5utr(self):
+        self.assertEqual(self.r("NM_000001.3:c.-1A>G"), "1:1003:A:G")  # just before c.1
+        self.assertEqual(self.r("NM_000001.3:c.-3A>G"), "1:1001:A:G")  # exon1 start
+
+    def test_plus_5utr_out_of_bounds(self):
+        self.assertIsNone(self.r("NM_000001.3:c.-4A>G"))  # before transcript start
+
+    # --- 3'UTR (c.*N): N bases 3' of the stop ---
+    def test_plus_3utr(self):
+        self.assertEqual(self.r("NM_000001.3:c.*1A>G"), "1:2008:A:G")  # after last coding base
+        self.assertEqual(self.r("NM_000001.3:c.*3A>G"), "1:2010:A:G")  # last transcript base
+
+    def test_plus_3utr_out_of_bounds(self):
+        self.assertIsNone(self.r("NM_000001.3:c.*4A>G"))  # past transcript end
+
+    # --- UTR on minus strand: positions mirror and bases complement ---
+    def test_minus_5utr(self):
+        self.assertEqual(self.r("NM_000002.3:c.-1G>A"), "2:2008:C:T")
+
+    def test_minus_3utr(self):
+        self.assertEqual(self.r("NM_000002.3:c.*1G>A"), "2:1003:C:T")
+
+    # --- conservative: intronic offsets and indels -> None (network fallback) ---
     def test_intronic_offset_none(self):
         self.assertIsNone(self.r("NM_000001.3:c.7+3A>G"))
+        self.assertIsNone(self.r("NM_000001.3:c.7-2A>G"))
+        self.assertIsNone(self.r("NM_000001.3:c.*5+1A>G"))
 
-    def test_utr_none(self):
-        self.assertIsNone(self.r("NM_000001.3:c.-5A>G"))
-        self.assertIsNone(self.r("NM_000001.3:c.*5A>G"))
+    def test_noncoding_rejects_utr_markers(self):
+        self.assertIsNone(self.r("NM_000001.3:n.-1A>G"))
+        self.assertIsNone(self.r("NM_000001.3:n.*1A>G"))
 
     def test_indel_none(self):
         self.assertIsNone(self.r("NM_000001.3:c.7_9del"))
