@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 import json
 import logging
+
 import redis
+
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,7 @@ class CacheManager:
         try:
             values = self.client.mget(keys)
             results = {}
-            for key, val in zip(keys, values):
+            for key, val in zip(keys, values, strict=False):
                 if val:
                     try:
                         results[key] = json.loads(val)

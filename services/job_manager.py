@@ -4,7 +4,7 @@ Job Manager Service
 ===================
 
 This module provides the `JobManager` class which handles the complete lifecycle
-of analysis jobs. It is responsible for creating, updating, retrieving, and 
+of analysis jobs. It is responsible for creating, updating, retrieving, and
 saving job state using JSON files in the local filesystem.
 """
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class JobManager:
     """
     Manages persistence and state mutations for Bio-Engine jobs.
-    
+
     Reads and writes `Job` models to disk as JSON files, ensuring that status
     updates, annotations, and analysis results are correctly stored.
     """
@@ -41,7 +41,7 @@ class JobManager:
     def create_job(self, name: str, reference: dict, patients: list[dict], reference_sequence: str | None = None, app_version: str | None = None, config: dict | None = None, hgvs_config: dict | None = None) -> Job:
         """
         Creates a new primary job record and initializes its status to CREATED.
-        
+
         Args:
             name (str): Label for the job.
             reference (dict): Reference definition.
@@ -50,7 +50,7 @@ class JobManager:
             app_version (str | None): UI client software version.
             config (dict | None): Alignment Tracy configuration.
             hgvs_config (dict | None): HGVS annotation configuration.
-            
+
         Returns:
             Job: The newly created job.
         """
@@ -276,10 +276,10 @@ class JobManager:
         """
         job_path = self._get_job_path(job.id)
         # Use a unique temp file to avoid race conditions between concurrent saves
-        import uuid
         import time
+        import uuid
         temp_path = job_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-        
+
         try:
             with open(temp_path, "wb") as f:
                 f.write(orjson.dumps(job.model_dump(), option=orjson.OPT_INDENT_2))
@@ -354,7 +354,7 @@ class JobManager:
         if level == "full":
             reads_dir = export_dir / "reads"
             reads_dir.mkdir(exist_ok=True)
-            
+
             # Copy read files
             for patient in job_copy.patients:
                 for read in patient.get("reads", []):
@@ -366,7 +366,7 @@ class JobManager:
                             read["file"] = str(new_path)
 
             reference: dict[str, str] = job_copy.reference # type: ignore
-            
+
             # Copy reference file if applicable
             if isinstance(reference, dict) and reference.get("type") == "file":
                 ref_val = reference.get("value")
@@ -378,15 +378,15 @@ class JobManager:
                         new_ref = ref_dir / original_ref.name
                         shutil.copy2(original_ref, new_ref)
                         reference["value"] = str(new_ref)
-        
+
         elif level == "results_only":
             job_copy.readonly = True
-        
+
         # Save JSON
         json_path = export_dir / f"{job.id}.json"
         with open(json_path, "wb") as f:
             f.write(orjson.dumps(job_copy.copy(deep=True).dict(), option=orjson.OPT_INDENT_2))
-            
+
         return str(export_dir)
 
     def import_job(self, source_folder: str) -> Job:
@@ -397,19 +397,19 @@ class JobManager:
         json_files = list(source_dir.glob("*.json"))
         if not json_files:
             raise ValueError(f"No job JSON found in {source_folder}")
-            
+
         json_path = json_files[0]
-        
+
         with open(json_path, "rb") as f:
             data = orjson.loads(f.read())
-            
+
         job = Job(**data)
-        
+
         if not job.readonly:
             # Full import: copy files to internal persistent storage
             internal_data_dir = self.jobs_dir / f"{job.id}_data"
             internal_data_dir.mkdir(parents=True, exist_ok=True)
-            
+
             reads_dir = source_dir / "reads"
             if reads_dir.exists():
                 internal_reads_dir = internal_data_dir / "reads"
@@ -425,7 +425,7 @@ class JobManager:
                                 new_path = internal_reads_dir / old_path.name
                                 shutil.copy2(actual_source, new_path)
                                 read["file"] = str(new_path)
-                                
+
             reference = job.reference
             if isinstance(reference, dict) and reference.get("type") == "file":
                 ref_dir = source_dir / "reference"
@@ -439,7 +439,7 @@ class JobManager:
                         new_ref = internal_ref_dir / old_path.name
                         shutil.copy2(actual_ref, new_ref)
                         reference["value"] = str(new_ref)
-                        
+
         self._save_job(job)
         logger.info(f"Imported job {job.id} from {source_folder}")
         return job

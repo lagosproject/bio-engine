@@ -2,12 +2,13 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Add project root to python path to resolve imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from utilities.vep_utils import OpenCRAVATAnnotator
+
 
 class TestOpenCRAVATAnnotator(unittest.TestCase):
     def setUp(self):
@@ -61,7 +62,7 @@ class TestOpenCRAVATAnnotator(unittest.TestCase):
         }
         # Force a FileNotFoundError to simulate missing binary
         mock_run.side_effect = FileNotFoundError()
-        
+
         results = self.annotator.get_annotations(["NC_000017.11:g.43045712T>C"])
         self.assertEqual(results, {})
 

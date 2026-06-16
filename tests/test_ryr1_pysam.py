@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
+import logging
 import os
 import sys
-import logging
+
 import pysam
 
 # Add project root to path
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def test_ryr1_pysam_indexing():
     logger.info("Starting RYR1 Gene Search and pysam Indexing Test...")
-    
+
     # 1. Search for RYR1
     query = "RYR1"
     logger.info(f"Searching for gene: {query}")
@@ -24,10 +25,10 @@ def test_ryr1_pysam_indexing():
     except Exception as e:
         logger.warning(f"Search failed with error: {e}")
         results = []
-    
+
     found_ng = False
     target_accession = "NG_008866"
-    
+
     if results:
         for res in results:
             acc = res['accession']
@@ -41,7 +42,7 @@ def test_ryr1_pysam_indexing():
                 break
     else:
         logger.warning("No search results returned. This might be a transient NCBI issue.")
-            
+
     if not found_ng:
         if results:
             logger.warning(f"{target_accession} not found in search results. Using it directly anyway.")
@@ -62,7 +63,7 @@ def test_ryr1_pysam_indexing():
     # 3. Verify files exist and are compressed
     # Note: ensure_indexed will only compress if sequence length >= 50,000
     # NG_008866 is ~160kb, so it should be compressed.
-    
+
     if not ref_path.endswith(".gz"):
         # If the downloaded file is small, it won't be compressed by default in bio-engine
         # But NG_008866 is large.
@@ -85,7 +86,7 @@ def test_ryr1_pysam_indexing():
         # We try to index even if small if tracy/pysam is available.
         logger.error(f"Error: Index file not found: {index_path}")
         sys.exit(1)
-    
+
     logger.info(f"Verified: Index file exists at {index_path}")
 
     # 4. Verify we can read from the indexed file using pysam

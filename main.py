@@ -9,6 +9,7 @@ global exception handlers, and configures Uvicorn for serving the API.
 """
 
 from core.logging import setup_logging
+
 setup_logging()
 
 import argparse
@@ -32,24 +33,24 @@ logger = logging.getLogger(__name__)
 if getattr(sys, 'frozen', False):
     bundle_dir = sys._MEIPASS
     exe_dir = os.path.dirname(sys.executable)
-    logger.info(f"Running in frozen mode.")
+    logger.info("Running in frozen mode.")
     logger.info(f"Bundle dir (_MEIPASS): {bundle_dir}")
     logger.info(f"Executable dir: {exe_dir}")
-    
+
     # Add bundle_dir to PATH (for internal PyInstaller files)
     os.environ["PATH"] = bundle_dir + os.pathsep + os.environ["PATH"]
-    
+
     # Try to find tracy and bgzip in the executable's directory
     # They might have the ps-analyzer- prefix and the target triple
     target_triple = "x86_64-pc-windows-msvc" if sys.platform == "win32" else "x86_64-unknown-linux-gnu"
-    
+
     for tool_name, setting_attr in [("tracy", "tracy_path"), ("bgzip", "bgzip_path"), ("samtools", "samtools_path")]:
         potential_names = [
             f"ps-analyzer-{tool_name}-{target_triple}.exe" if sys.platform == "win32" else f"ps-analyzer-{tool_name}-{target_triple}",
             f"ps-analyzer-{tool_name}.exe" if sys.platform == "win32" else f"ps-analyzer-{tool_name}",
             f"{tool_name}.exe" if sys.platform == "win32" else tool_name
         ]
-        
+
         for name in potential_names:
             path = os.path.join(exe_dir, name)
             if os.path.exists(path):
@@ -87,8 +88,8 @@ app.add_middleware(
 async def bio_engine_exception_handler(request: Request, exc: BioEngineError):
     """
     Global exception handler for BioEngineError.
-    
-    Transforms internal application exceptions into a standardized JSON response 
+
+    Transforms internal application exceptions into a standardized JSON response
     with a 500 status code, exposing the exception type, message, and context.
     """
     return JSONResponse(
@@ -106,7 +107,7 @@ app.include_router(router)
 def signal_handler(sig, frame):
     """
     Handles OS signals for graceful shutdown.
-    
+
     Args:
         sig: The signal number.
         frame: The current stack frame.
@@ -135,7 +136,7 @@ if __name__ == "__main__":
     if args.resource_path:
         resource_path = clean_win_path(args.resource_path)
         logger.info(f"Adding resource path to PATH: {resource_path}")
-        
+
         # We search for potential DLL locations relative to the resource_path
         # Best Practice: Cover multiple common Tauri 2 directory patterns
         potential_dll_dirs = [
@@ -144,7 +145,7 @@ if __name__ == "__main__":
              os.path.join(resource_path, "resources"),         # resources folder
              os.path.join(resource_path, "resources", "binaries") # resources/binaries folder
         ]
-        
+
         for p in potential_dll_dirs:
              if os.path.isdir(p):
                  if p not in os.environ["PATH"]:
@@ -161,7 +162,7 @@ if __name__ == "__main__":
         if exe_dir not in os.environ["PATH"]:
             os.environ["PATH"] = exe_dir + os.pathsep + os.environ["PATH"]
             logger.info(f"Added executable dir to PATH: {exe_dir}")
-        
+
         bundle_dir = getattr(sys, '_MEIPASS', None)
         if bundle_dir and bundle_dir not in os.environ["PATH"]:
              os.environ["PATH"] = bundle_dir + os.pathsep + os.environ["PATH"]
@@ -171,7 +172,7 @@ if __name__ == "__main__":
     # (Aggressive discovery fallback)
     if sys.platform == "win32" and args.resource_path:
         found_zlib = False
-        for root, dirs, files in os.walk(clean_win_path(args.resource_path)):
+        for root, _dirs, files in os.walk(clean_win_path(args.resource_path)):
             if "zlib1.dll" in files:
                 if root not in os.environ["PATH"]:
                     os.environ["PATH"] = root + os.pathsep + os.environ["PATH"]
@@ -212,13 +213,13 @@ if __name__ == "__main__":
         settings.jobs_dir = os.path.join(data_dir, "jobs")
         settings.cache_dir = os.path.join(data_dir, "ncbi_cache")
         settings.uploads_dir = os.path.join(data_dir, "uploads")
-        
+
         # Ensure directories exist
         os.makedirs(settings.logs_dir, exist_ok=True)
         os.makedirs(settings.jobs_dir, exist_ok=True)
         os.makedirs(settings.cache_dir, exist_ok=True)
         os.makedirs(settings.uploads_dir, exist_ok=True)
-        
+
         # Re-initialize logging with new path
         setup_logging()
         logger.info(f"Logging re-initialized at: {settings.logs_dir}")

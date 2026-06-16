@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-import os
 import logging
-from typing import Dict, Any
+import os
+
 import httpx
 from Bio import Entrez
+
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -13,11 +14,11 @@ class ProxyManager:
     Manages global proxy settings and provides configured HTTP clients.
     """
     _instance = None
-    _clients: Dict[str, httpx.Client] = {}
+    _clients: dict[str, httpx.Client] = {}
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(ProxyManager, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
             cls._instance.refresh_proxies()
         return cls._instance
 
@@ -54,10 +55,10 @@ class ProxyManager:
             proxies['http'] = http_proxy
         if https_proxy:
             proxies['https'] = https_proxy
-        
+
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
         urllib.request.install_opener(opener)
-        
+
         # Clear existing httpx clients to force them to be recreated with new proxies
         for client in self._clients.values():
             try:
@@ -65,7 +66,7 @@ class ProxyManager:
             except Exception:
                 pass
         self._clients.clear()
-        
+
         logger.info(f"Proxies refreshed: HTTP={http_proxy}, HTTPS={https_proxy}")
 
     def get_client(self, name: str = "default", timeout: float = 30.0) -> httpx.Client:

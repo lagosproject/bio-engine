@@ -3,7 +3,7 @@
 HGVS Utilities
 ==============
 
-This module provides the `HGVSAnnotator` class and connection singletons for 
+This module provides the `HGVSAnnotator` class and connection singletons for
 interfacing with the Universal Transcript Archive (UTA) via the `hgvs` package.
 It supports deep variant notation mapping (e.g., genomic to transcript).
 """
@@ -42,7 +42,7 @@ def get_uta_connection():
 class HGVSAnnotator:
     """
     Stateful orchestrator for mapping genetic variants utilizing `hgvs` mappers.
-    
+
     Resolves mapping between genomic (NC_), coding (NM_), and arbitrary custom
     identifiers. Encapsulates an internal lock to ensure thread safety across
     background workers mutating common data frames.
@@ -167,14 +167,14 @@ class HGVSAnnotator:
     def find_equivalents(self, ac: str, ref_type: str, pos: int, ref: str, alt: str) -> list[str]:
         """
         Explores all equivalent HGVS variants using breadth-first search (BFS).
-        
+
         Args:
             ac (str): Accession string (e.g. 'NM_00123.4').
             ref_type (str): Type of reference ('c', 'g', 'n', 'p').
             pos (int): Origin position for the variant.
             ref (str): Reference nucleotide/amino acid.
             alt (str): Alternate sequence.
-            
+
         Returns:
             list[str]: Sorted list of unique mapped HGVS string variations.
         """
@@ -226,9 +226,9 @@ class HGVSAnnotator:
                                             all_vars[v_str] = v_mapped
                                             next_to_process.append(v_mapped)
                                         processed_acs.add(v_mapped.ac)
-                                except: pass
+                                except Exception: pass
                                 processed_acs.add(target_ac)
-                    except: pass
+                    except Exception: pass
 
                     # 2. If genomic, find all overlapping transcripts
                     if v_type == 'g':
@@ -255,9 +255,9 @@ class HGVSAnnotator:
                                                 all_vars[v_str] = v_tx
                                                 next_to_process.append(v_tx)
                                             processed_acs.add(v_tx.ac)
-                                    except: pass
+                                    except Exception: pass
                                     processed_acs.add(tx_ac)
-                        except: pass
+                        except Exception: pass
 
                     # 3. If coding transcript, try to find protein
                     if v_type == 'c':
@@ -268,7 +268,7 @@ class HGVSAnnotator:
                                 if v_str not in all_vars:
                                     all_vars[v_str] = var_p
                                 processed_acs.add(var_p.ac)
-                        except: pass
+                        except Exception: pass
 
                 to_process = next_to_process
                 depth += 1

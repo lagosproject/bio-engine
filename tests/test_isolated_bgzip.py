@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
+import logging
 import os
+import subprocess
 import sys
 import tempfile
-import subprocess
-import logging
+
 import pytest
 
 logging.basicConfig(level=logging.INFO)
@@ -13,22 +14,22 @@ def test_bgzip():
     bgzip_path = os.environ.get("BIO_BGZIP_PATH")
     if not bgzip_path:
         pytest.skip("BIO_BGZIP_PATH must be set for this test")
-        
+
     logger.info(f"Testing bgzip at: {bgzip_path}")
-    
+
     if not os.path.exists(bgzip_path):
         logger.warning(f"File not found exactly at: {bgzip_path}. It might rely on PATH resolution.")
-        
+
     try:
         # Create a tiny dummy fasta
         with tempfile.TemporaryDirectory() as tmpdir:
             fasta = os.path.join(tmpdir, "test.fasta")
             with open(fasta, "w") as f:
                 f.write(">1\nATGC\n")
-                
+
             cmd = [bgzip_path, "-c", fasta]
             logger.info(f"Running command: {cmd}")
-            
+
             # Remove any msys/mingw/git paths from PATH to simulate the raw production environment
             env = os.environ.copy()
             clean_path = []
@@ -37,14 +38,14 @@ def test_bgzip():
                 if "msys" not in p_lower and "mingw" not in p_lower and "git" not in p_lower:
                     clean_path.append(p)
             env["PATH"] = os.pathsep.join(clean_path)
-            
+
             logger.info(f"Cleaned PATH: {env['PATH']}")
             logger.info("Executing...")
             res = subprocess.run(cmd, capture_output=True, env=env)
-            
+
             logger.info(f"STDOUT: {res.stdout}")
             logger.info(f"STDERR: {res.stderr}")
-            
+
             if res.returncode != 0:
                 logger.error(f"Command failed with exit code: {res.returncode}")
                 # Print hex for missing DLL debugging

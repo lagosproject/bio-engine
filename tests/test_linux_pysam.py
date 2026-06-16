@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: MIT
+import logging
 import os
 import sys
-import logging
 import tempfile
-import shutil
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -21,13 +20,13 @@ def test_pysam_capabilities():
     with tempfile.TemporaryDirectory() as tmpdir:
         fasta_path = os.path.join(tmpdir, "test.fasta")
         gz_path = fasta_path + ".gz"
-        
+
         # 1. Create a dummy FASTA file
         logger.info("Creating dummy FASTA file...")
         with open(fasta_path, "w") as f:
             f.write(">test_seq\n")
             f.write("ATGC" * 1000 + "\n") # 4kb sequence
-            
+
         # 2. Test bgzip compression via pysam
         logger.info(f"Testing pysam.tabix_compress on {fasta_path}...")
         try:
@@ -38,7 +37,7 @@ def test_pysam_capabilities():
         except Exception as e:
             logger.error(f"pysam.tabix_compress failed: {e}")
             sys.exit(1)
-            
+
         # 3. Test faidx indexing via pysam
         logger.info(f"Testing pysam.faidx on {gz_path}...")
         try:
@@ -50,7 +49,7 @@ def test_pysam_capabilities():
         except Exception as e:
             logger.error(f"pysam.faidx failed: {e}")
             sys.exit(1)
-            
+
         # 4. Verify we can read from the indexed file
         logger.info("Verifying sequence retrieval...")
         with pysam.FastaFile(gz_path) as fa:

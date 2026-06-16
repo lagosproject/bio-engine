@@ -37,7 +37,7 @@ def init_opencravat(oc_path: str = "oc"):
             if match:
                 config_path = match.group(1).strip()
                 if os.path.exists(config_path):
-                    with open(config_path, "r") as f:
+                    with open(config_path) as f:
                         config_data = yaml.safe_load(f) or {}
                     if not config_data.get("user_email_opt_out") or config_data.get("save_metrics") is not False:
                         config_data["user_email"] = "no-email"
@@ -52,7 +52,7 @@ def init_opencravat(oc_path: str = "oc"):
     if os.path.exists("/app/storage"):
         target_dir = "/app/storage/open-cravat"
         os.makedirs(target_dir, exist_ok=True)
-        
+
         logger.info(f"Setting OpenCRAVAT modules directory to persistent storage: {target_dir}")
         rc, out, err = _run("config", "md", target_dir, oc_path=oc_path)
         if rc != 0:
@@ -197,24 +197,24 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
         if re.match(r"(?i)^\s*(name|module)\s", line):
             header = line
             break
-            
+
     if not header:
         return _parse_module_table_fallback(stdout, default_installed)
-        
+
     lower_header = header.lower()
     idx_name = lower_header.find("name")
     idx_title = lower_header.find("title")
     idx_type = lower_header.find("type")
     idx_installed = lower_header.find("installed")
-    
+
     idx_version = lower_header.find("version")
     if idx_version == -1:
         idx_version = lower_header.find("store ver")
     if idx_version == -1:
         idx_version = lower_header.find("local ver")
-        
+
     idx_size = lower_header.find("size")
-    
+
     cols = []
     if idx_name != -1: cols.append(("name", idx_name))
     if idx_title != -1: cols.append(("title", idx_title))
@@ -222,17 +222,17 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
     if idx_installed != -1: cols.append(("installed", idx_installed))
     if idx_version != -1: cols.append(("version", idx_version))
     if idx_size != -1: cols.append(("size", idx_size))
-    
+
     cols.sort(key=lambda x: x[1])
-    
+
     modules: list[dict[str, Any]] = []
-    
+
     for line in stdout.splitlines():
         if not line.strip() or re.match(r"^[-=\s]*$", line):
             continue
         if re.match(r"(?i)^\s*(name|module)\s", line):
             continue
-            
+
         mod: dict[str, Any] = {
             "name": "",
             "version": None,
@@ -241,11 +241,11 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
             "installed": default_installed,
             "title": None,
         }
-        
+
         for i, (col_name, start_idx) in enumerate(cols):
             end_idx = cols[i+1][1] if i + 1 < len(cols) else len(line)
             val = line[start_idx:end_idx].strip()
-            
+
             if col_name == "name":
                 mod["name"] = val
             elif col_name == "title":
@@ -262,10 +262,10 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
                 mod["version"] = version_parts[0] if version_parts else None
             elif col_name == "size":
                 mod["size_bytes"] = _parse_size_bytes(val)
-                
+
         if not mod["name"]:
             continue
-            
+
         if mod["installed"] is None and default_installed is not None:
             mod["installed"] = default_installed
         elif mod["installed"] is None and default_installed is None:
@@ -281,9 +281,9 @@ def _parse_module_table(stdout: str, default_installed: bool | None = None) -> l
                     mod["installed"] = False
             else:
                 mod["installed"] = False
-                
+
         modules.append(mod)
-        
+
     return modules
 
 

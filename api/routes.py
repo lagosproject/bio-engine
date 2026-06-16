@@ -10,45 +10,43 @@ and biological database communication (e.g., fetching references, HGVS variants)
 
 import logging
 import os
+import re
 import shutil
 
-import re
-from fastapi import APIRouter, BackgroundTasks, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from sqlalchemy import Integer, cast, func
+from sqlalchemy.orm import Session
 
+from core.cache import cache
+from core.database import Base, engine, get_db
 from core.exceptions import BioEngineError
 from data.models import (
     AddCommentRequest,
     AddHGVSAlternativesRequest,
+    ApprovedVariantResponse,
+    ApproveVariantRequest,
     CreateJobRequest,
     HGVSRequest,
+    HotspotPoint,
     ImportJobRequest,
     Job,
     JobStatus,
+    OCInstallTask,
+    OCModule,
+    OCStatus,
+    OpenCravatConfigRequest,
+    ProxyConfigRequest,
     RenameJobRequest,
     ShareJobRequest,
     UpdateJobRequest,
-    ProxyConfigRequest,
-    OpenCravatConfigRequest,
     UpdateVariantStatusRequest,
-    ApproveVariantRequest,
-    HotspotPoint,
-    ApprovedVariantResponse,
-    OCStatus,
-    OCModule,
-    OCInstallTask,
 )
+from data.models_db import ApprovedVariant
 from services import aligner as aligner_service
+from services import opencravat as oc_service
 from services import reference as ref_service
 from services.job_manager import JobManager
-from services import opencravat as oc_service
 from tasks.worker import annotate_hgvs_background, process_job_background
-
-from sqlalchemy.orm import Session
-from sqlalchemy import func, Integer, cast
-from core.database import get_db, engine, Base
-from data.models_db import ApprovedVariant
-from fastapi import Depends
-from core.cache import cache
 
 # Create tables on startup (simple approach for now)
 Base.metadata.create_all(bind=engine)
@@ -62,11 +60,11 @@ job_manager = JobManager()
 def add_comment(job_id: str, request: AddCommentRequest):
     """
     Adds a user comment to a specific variant in a job.
-    
+
     Args:
         job_id (str): The unique identifier of the job.
         request (AddCommentRequest): The details of the comment.
-        
+
     Returns:
         Job: The updated job object containing the new comment.
     """
@@ -97,7 +95,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
     # 2. Sync with approved_variants DB
     # The variant_key can be "patient_id:index" or just "position" (for grouped variants)
     patient_id, variant_id = request.variant_key.split(':') if ':' in request.variant_key else (None, request.variant_key)
-    
+
     # Extract variant details from results
     target_variant = None
     if job.results:
@@ -105,16 +103,16 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
             # If patient_id is specified, only look in that patient's results
             if patient_id and res.get("id") != patient_id:
                 continue
-                
+
             alignment_data = res.get("alignment", {})
             v_data = alignment_data.get("variants", {})
             rows, cols = v_data.get("rows", []), v_data.get("columns", [])
             col_map = {col.upper(): i for i, col in enumerate(cols)}
-            
+
             try:
                 # 1. Map columns
                 col_map = {col.upper(): i for i, col in enumerate(cols)}
-                
+
                 # If variant_id is a row index (usually when patient_id is present)
                 if patient_id:
                     v_idx = int(variant_id)
@@ -126,7 +124,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                             # Try to fetch alternatives on the fly if missing or not genomic
                             alts = job.hgvs_alternatives.get(hgvs_key, [])
                             has_genomic = any(re.match(r"(?:NC_0000\d{2}|NC_012920|(?:chr)?(?:[1-9]|1\d|2[0-2]|X|Y|MT|M))[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
-                            
+
                             if not has_genomic:
                                 try:
                                     from utilities.ensembl_hgvs import EnsemblHGVS
@@ -141,7 +139,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                     has_genomic = any(re.match(r"(?:NC_0000\d{2}|NC_012920|(?:chr)?(?:[1-9]|1\d|2[0-2]|X|Y|MT|M))[:.](?:g\.)?\d+", a) for a in [hgvs_key] + alts)
                                 except Exception as e:
                                     logger.warning(f"On-the-fly HGVS fetch failed for {hgvs_key}: {e}")
-                            
+
                             # Candidates: the hgvs_key itself + its alternatives
                             candidates = [hgvs_key] + alts
                             logger.info(f"Sync: Checking {len(candidates)} HGVS/SPDI candidates for {hgvs_key} (patient {patient_id})")
@@ -153,14 +151,14 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                     chrom = match.group(1) or (match.group(2) and "MT") or match.group(3)
                                     if chrom == "M": chrom = "MT"
                                     if chrom.isdigit(): chrom = str(int(chrom))
-                                    
+
                                     pos = int(match.group(4))
                                     # SPDI is 0-based, HGVS is 1-based.
                                     # SPDI usually looks like Ac:Pos:Ref:Alt (3 colons)
                                     # HGVS looks like Ac:g.PosRef>Alt
                                     if ":g." not in alt and alt.count(":") >= 2:
                                         pos += 1 # Normalize SPDI 0-based to 1-based
-                                    
+
                                     target_variant = {
                                         "chromosome": chrom,
                                         "position": pos,
@@ -170,7 +168,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                     }
                                     logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']} from {alt}")
                                     break
-                        
+
                         # Fallback: if reference is genomic NC_...
                         if not target_variant and job.reference.get("type") == "ncbi":
                             ref_val = job.reference.get("value", "")
@@ -238,7 +236,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                         }
                                         logger.info(f"Sync: Resolved to Chr {target_variant['chromosome']} Pos {target_variant['position']} from {alt}")
                                         break
-                            
+
                             # Fallback: if reference is genomic NC_...
                             if not target_variant and job.reference.get("type") == "ncbi":
                                 ref_val = job.reference.get("value", "")
@@ -254,7 +252,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                                     logger.info(f"Sync: Resolved via Job Reference to Chr {target_variant['chromosome']} Pos {target_variant['position']}")
 
                             if target_variant: break
-                    
+
                     if not target_variant:
                         logger.warning(f"Grouped variant at pos {target_pos} in job {job_id} skipped: Could not resolve genomic coordinates.")
                     break
@@ -290,7 +288,7 @@ def update_variant_status(job_id: str, request: UpdateVariantStatusRequest, db: 
                 ApprovedVariant.chromosome == target_variant["chromosome"],
                 ApprovedVariant.position == target_variant["position"]
             ).delete()
-        
+
         db.commit()
 
     return job
@@ -304,7 +302,7 @@ def delete_comment(job_id: str, variant_key: str, comment_id: str):
         job_id (str): The unique identifier of the job.
         variant_key (str): The identifier key of the variant.
         comment_id (str): The ID of the comment to delete.
-        
+
     Returns:
         Job: The updated job object.
     """
@@ -327,7 +325,7 @@ def configure_proxy(request: ProxyConfigRequest):
     if request.http_proxy is not None:
         from core.config import settings
         settings.http_proxy = request.http_proxy if request.http_proxy != "" else None
-    
+
     if request.https_proxy is not None:
         from core.config import settings
         settings.https_proxy = request.https_proxy if request.https_proxy != "" else None
@@ -337,8 +335,8 @@ def configure_proxy(request: ProxyConfigRequest):
     proxy_manager.refresh_proxies()
 
     return {
-        "status": "success", 
-        "http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"), 
+        "status": "success",
+        "http_proxy": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"),
         "https_proxy": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     }
 
@@ -359,13 +357,13 @@ async def upload_file(file: UploadFile = File(...)):
     Returns the absolute path to the uploaded file.
     """
     from core.config import settings
-    
+
     file_path = os.path.join(settings.uploads_dir, file.filename)
-    
+
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
+
         logger.info(f"File uploaded successfully: {file_path}")
         return {"path": file_path}
     except Exception as e:
@@ -376,7 +374,7 @@ async def upload_file(file: UploadFile = File(...)):
 def check_reference(id: str):
     """
     Checks if a given reference sequence ID exists and is accessible.
-    
+
     Args:
         id (str): The NCBI accession or the local identifier to check.
     """
@@ -405,13 +403,13 @@ def preview_read(path: str):
 def create_job(request: CreateJobRequest):
     """
     Creates a new analysis job based on the requested configuration.
-    
-    If an NCBI reference is provided, it attempts to load its FASTA sequence 
+
+    If an NCBI reference is provided, it attempts to load its FASTA sequence
     before starting the job manager creation phase.
-    
+
     Args:
         request (CreateJobRequest): Payload with reference, patients, and optional configs.
-        
+
     Returns:
         Job: Detailed job data including its initial queued status.
     """
@@ -449,7 +447,7 @@ def list_jobs():
 def get_job(job_id: str):
     """
     Fetches the details of a single job.
-    
+
     Args:
         job_id (str): The ID of the job to retrieve.
     """
@@ -487,7 +485,7 @@ def rename_job(job_id: str, request: RenameJobRequest):
 def update_job(job_id: str, request: UpdateJobRequest):
     """
     Full update of an existing job configuration.
-    
+
     Args:
         job_id (str): The ID of the job to update.
         request (UpdateJobRequest): The new configuration parameters for the job.
@@ -570,23 +568,23 @@ def hgvs_alternatives(request: HGVSRequest):
     """
     try:
         from utilities.ensembl_hgvs import EnsemblHGVS
-        
+
         ensembl = EnsemblHGVS(assembly=request.assembly)
-        
+
         # Determine HGVS type (c, g, or n)
         if request.transcript.startswith(('NM_', 'XM_')): h_type = 'c'
         elif request.transcript.startswith(('NC_', 'NG_', 'NW_', 'NT_')): h_type = 'g'
         else: h_type = 'n'
-        
+
         # Generate primary ID
         primary = EnsemblHGVS.format_hgvs(
-            request.transcript, 
-            h_type, 
-            request.pos, 
-            request.ref, 
+            request.transcript,
+            h_type,
+            request.pos,
+            request.ref,
             request.alt
         )
-        
+
         # Batch lookup (even for one) is faster and more consistent now
         results_map = ensembl.get_equivalents_batch([primary])
         return results_map.get(primary, [primary])
@@ -618,7 +616,7 @@ def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
     """
     try:
         job = job_manager.import_job(request.source_folder)
-        
+
         # Sync approved variants from the imported job
         for variant_key, status in job.variant_statuses.items():
             if status == "approved":
@@ -626,7 +624,7 @@ def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
                 # variant_key format is usually "patient_id:variant_id" or similar
                 # We need to find the matching entry in job.results
                 patient_id, variant_idx_str = variant_key.split(':') if ':' in variant_key else (None, variant_key)
-                
+
                 # Search for the variant in the results
                 target_variant = None
                 if job.results:
@@ -641,7 +639,7 @@ def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
                                     row = rows[v_idx]
                                     # Map columns
                                     col_map = {col.upper(): i for i, col in enumerate(cols)}
-                                    
+
                                     # Ensure we have a chromosome name
                                     chr_name = row[col_map["CHR"]] if "CHR" in col_map else None
                                     if not chr_name:
@@ -655,9 +653,9 @@ def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
                                         "gene": row[col_map.get("GENE", 0)] if "GENE" in col_map else job.hgvs_config.gene if job.hgvs_config else None
                                     }
                                     break
-                            except:
+                            except Exception:
                                 continue
-                
+
                 if target_variant:
                     # Check if already exists to avoid duplicates
                     exists = db.query(ApprovedVariant).filter(
@@ -665,7 +663,7 @@ def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
                         ApprovedVariant.chromosome == target_variant["chromosome"],
                         ApprovedVariant.position == target_variant["position"]
                     ).first()
-                    
+
                     if not exists:
                         db_variant = ApprovedVariant(
                             chromosome=target_variant["chromosome"],
@@ -679,7 +677,7 @@ def import_job(request: ImportJobRequest, db: Session = Depends(get_db)):
                             assembly=job.hgvs_config.assembly if job.hgvs_config else "GRCh38"
                         )
                         db.add(db_variant)
-        
+
         db.commit()
         return job
     except Exception as e:
@@ -731,7 +729,7 @@ def get_hotspots(bin_size: int = 1000000, assembly: str = "GRCh38", db: Session 
             stop=(bin_index + 1) * bin_size,
             count=count
         ))
-    
+
     return results
 
 @router.post("/cache/flush")

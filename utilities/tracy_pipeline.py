@@ -196,7 +196,7 @@ class TracyPipeline:
         if variants := data.get("variants"):
             rows = variants.get("rows", [])
             header = variants.get("columns", [])
-            
+
             # Identify indices
             try:
                 pos_idx = header.index("pos")
@@ -208,16 +208,16 @@ class TracyPipeline:
             if "hgvs" not in header:
                 header.append("hgvs")
                 variants["columns"] = header
-            
+
             hgvs_idx = header.index("hgvs")
-            
+
             if source_ac:
                 from utilities.ensembl_hgvs import EnsemblHGVS
                 # Determine HGVS type (c, g, or n)
                 if source_ac.startswith(('NM_', 'XM_')): h_type = 'c'
                 elif source_ac.startswith(('NC_', 'NG_', 'NW_', 'NT_')): h_type = 'g'
                 else: h_type = 'n'
-                
+
                 # Retrieve CDS boundaries if coding transcript
                 cds_start = 0
                 cds_end = None
@@ -232,15 +232,15 @@ class TracyPipeline:
                                 break
                     except Exception as fe:
                         logger.error(f"Failed to fetch reference features for CDS mapping: {fe}")
-                
+
                 for row in rows:
                     try:
                         # Generate local primary HGVS
                         primary = EnsemblHGVS.format_hgvs(
-                            source_ac, 
-                            h_type, 
-                            int(row[pos_idx]), 
-                            row[ref_idx], 
+                            source_ac,
+                            h_type,
+                            int(row[pos_idx]),
+                            row[ref_idx],
                             row[alt_idx],
                             cds_start=cds_start,
                             cds_end=cds_end
@@ -510,7 +510,7 @@ class TracyPipeline:
             return ""
 
         read_seq_ref = []
-        for r_char, a_char in zip(refalign, altalign):
+        for r_char, a_char in zip(refalign, altalign, strict=False):
             if a_char == '-':
                 continue
             read_seq_ref.append(r_char)

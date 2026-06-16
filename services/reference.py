@@ -4,7 +4,7 @@ Reference Biology Service
 =========================
 
 This module manages DNA reference sequences. It handles downloading
-sequences from NCBI (Entrez), local caching, feature extraction, 
+sequences from NCBI (Entrez), local caching, feature extraction,
 format conversion (GenBank to FASTA), and indexing via samtools/tracy.
 """
 
@@ -50,7 +50,7 @@ def search_reference(query: str, retmax: int = 20, assembly: str | None = None) 
             from core.proxy_manager import proxy_manager
             base_url = "https://grch37.rest.ensembl.org" if is_hg19 else "https://rest.ensembl.org"
             client = proxy_manager.get_client("ensembl", timeout=120.0)
-            
+
             # Lookup symbol to get transcripts
             url = f"{base_url}/lookup/symbol/human/{query}?expand=1"
             response = client.get(url, headers={"Content-Type": "application/json"})
@@ -64,7 +64,7 @@ def search_reference(query: str, retmax: int = 20, assembly: str | None = None) 
                         if xref.get("dbname") in refseq_dbs:
                             xref_ac = xref.get("primary_id")
                             break
-                    
+
                     ensembl_results.append({
                         "accession": xref_ac or transcript.get("id"),
                         "title": f"{transcript.get('display_name', '')} (Ensembl/RefSeq mapping for {assembly})",
@@ -87,7 +87,7 @@ def search_reference(query: str, retmax: int = 20, assembly: str | None = None) 
             with Entrez.esearch(db="nucleotide", term=term, retmax=retmax) as handle:
                 record = Entrez.read(handle)
                 id_list = record.get("IdList", [])
-                
+
             if id_list:
                 with Entrez.esummary(db="nucleotide", id=",".join(id_list)) as sum_handle:
                     summaries = Entrez.read(sum_handle)
@@ -118,7 +118,7 @@ def search_reference(query: str, retmax: int = 20, assembly: str | None = None) 
             for r in ensembl_res:
                 if not any(res["accession"] == r["accession"] for res in results):
                     results.append(r)
-    
+
     return results
 
 def load_reference(ref_input: str, assembly: str | None = None) -> str:
@@ -155,7 +155,7 @@ def _fetch_ncbi_reference(accession: str, assembly: str | None = None) -> str:
     """Fetch reference from NCBI and cache it. Use .gz for large files (>=50kb)."""
     cache_dir = settings.get_cache_dir(assembly=assembly)
     os.makedirs(cache_dir, exist_ok=True)
-    
+
     fasta_cache_file = os.path.join(cache_dir, f"{accession}.fasta")
     gb_cache_file = os.path.join(cache_dir, f"{accession}.gb")
 
@@ -284,9 +284,9 @@ def get_lrg_mapping(accession: str, assembly: str | None = None) -> str | None:
         # Try to load it if possible
         try:
             load_reference(accession, assembly=assembly)
-        except:
+        except Exception:
             return None
-    
+
     if not os.path.exists(gb_path):
         return None
 
@@ -298,7 +298,7 @@ def get_lrg_mapping(accession: str, assembly: str | None = None) -> str | None:
         match = re.search(r"\(LRG_(\d+)\)", desc)
         if match:
             return f"LRG_{match.group(1)}"
-        
+
         # Also check db_xref in source features
         for feature in record.features:
             if feature.type == "source":
@@ -307,12 +307,12 @@ def get_lrg_mapping(accession: str, assembly: str | None = None) -> str | None:
                         return xref.replace("LRG:", "LRG_")
     except Exception as e:
         logger.error(f"Failed to parse LRG mapping from {gb_path}: {e}")
-    
+
     return None
 
 def ensure_indexed(ref_path: str) -> str:
     """Compresses and indexes a large reference file. Handles recovery from bad indices."""
-    
+
     # Check for binaries, but don't fail immediately if pysam is available
     bgzip_available = shutil.which(settings.bgzip_path) if settings.bgzip_path else None
     samtools_available = shutil.which(settings.samtools_path) if settings.samtools_path else None
@@ -337,7 +337,7 @@ def ensure_indexed(ref_path: str) -> str:
                 success = True
             except (ImportError, Exception) as e:
                 logger.warning(f"pysam.tabix_compress failed or unavailable: {e}")
-                
+
             # Fallback to binary
             if not success:
                 if bgzip_available:

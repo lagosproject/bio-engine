@@ -51,7 +51,7 @@ class HGVSConfig(BaseModel):
     assembly: str = "GRCh38"
     auto_hgvs: bool = False
     auto_vep: bool = False
-    vep_mode: VepMode = VepMode.ONLINE
+    vep_mode: VepMode = VepMode.OPENCRAVAT
     vep_path: str | None = None
     vep_data: str | None = None
 

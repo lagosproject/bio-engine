@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: MIT
-from sqlalchemy import Column, Integer, String, DateTime
 from datetime import datetime
+
+from sqlalchemy import Column, DateTime, Integer, String
+
 from core.database import Base
+
 
 class ApprovedVariant(Base):
     __tablename__ = "approved_variants"

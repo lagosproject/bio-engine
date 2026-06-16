@@ -99,7 +99,7 @@ def get_iupac_consensus(seq1: str, seq2: str) -> list[str]:
 
 def two_iupac_consensus(seq1: str, seq2: str) -> list[str]:
     """
-    Generates an IUPAC consensus sequence from two aligned sequences, 
+    Generates an IUPAC consensus sequence from two aligned sequences,
     properly merging IUPAC symbols.
     """
     if not seq1: return list(seq2.upper())

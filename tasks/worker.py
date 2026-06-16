@@ -29,7 +29,7 @@ job_manager = JobManager()
 def _process_single_read(patient_id: str, read_entry: Any, job: Job, ref_path: str, job_output_base: str) -> dict[str, Any]:
     """
     Submits a single sample read to the alignment service in an isolated context.
-    
+
     Args:
         patient_id (str): The ID of the patient owning this read.
         read_entry (Any): The sequence payload or path containing the trace.
@@ -91,13 +91,13 @@ def _process_single_read(patient_id: str, read_entry: Any, job: Job, ref_path: s
 def process_job_background(job_id: str):
     """
     Executes an entire Bio-Engine analysis pipeline asynchronously.
-    
+
     1. Loads the specified reference.
     2. Initializes HGVS services via UTA if requested.
     3. Triggers parallel alignment across multiple workers.
     4. Gathers multi-sequence mutations into HGVS formatting.
     5. Dispatches global genomic annotations to Ensembl's VEP API.
-    
+
     Args:
         job_id (str): The identifier of the queued job to run.
     """
@@ -116,7 +116,7 @@ def process_job_background(job_id: str):
         # Resolve Reference
         ref_input = job.reference.get("value") if isinstance(job.reference, dict) else getattr(job.reference, "value", None)
         assembly = job.hgvs_config.assembly if job.hgvs_config else "GRCh38"
-        
+
         if not ref_input:
             logger.error(f"Job {job_id} missing reference value")
             job_manager.update_job_status(job_id, JobStatus.FAILED)
@@ -228,26 +228,33 @@ def process_job_background(job_id: str):
             hgvs_to_lookup = list(unique_hgvs - existing_alternatives)
 
             if hgvs_to_lookup and job.hgvs_config and job.hgvs_config.transcript:
-                job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(hgvs_to_lookup)} new variants via Ensembl...")
-                try:
-                    from utilities.ensembl_hgvs import EnsemblHGVS
-                    ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
-                    all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
-                    
-                    # Bulk update alternatives to job
-                    if all_alternatives:
-                        job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
-                except Exception as e:
-                    logger.error(f"Batch HGVS annotation failed: {e}")
+                vep_mode_val = job.hgvs_config.vep_mode.value if hasattr(job.hgvs_config.vep_mode, 'value') else job.hgvs_config.vep_mode
+
+                if vep_mode_val == "opencravat":
+                    # Keep local/fast by mapping each variant to itself by default to avoid slow online calls
+                    all_alternatives = {v: [v] for v in hgvs_to_lookup}
+                    job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+                else:
+                    job_manager.update_job_progress(job_id, 79, f"Batch annotating {len(hgvs_to_lookup)} new variants via Ensembl...")
+                    try:
+                        from utilities.ensembl_hgvs import EnsemblHGVS
+                        ensembl = EnsemblHGVS(assembly=job.hgvs_config.assembly or "GRCh38")
+                        all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
+
+                        # Bulk update alternatives to job
+                        if all_alternatives:
+                            job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
+                    except Exception as e:
+                        logger.error(f"Batch HGVS annotation failed: {e}")
             elif unique_hgvs and job.hgvs_config and job.hgvs_config.transcript:
                 logger.info("All variants already have alternatives in job.")
 
             # Update results in job manager before VEP processing to ensure we have the latest HGVS
             job_manager.update_job_results(job_id, results)
 
-            # Global VEP Annotation (if enabled)
-            if job.hgvs_config and job.hgvs_config.auto_vep:
-                job_manager.update_job_progress(job_id, 80, "Annotating variants with VEP (this may take a while)...")
+            # Global Variant Annotation (always runs OpenCRAVAT, optionally runs VEP online)
+            if job.hgvs_config:
+                job_manager.update_job_progress(job_id, 80, "Annotating variants with OpenCRAVAT (this may take a while)...")
                 try:
                     from utilities.vep_utils import VEPAnnotator
                     vep_annotator = VEPAnnotator(
@@ -258,7 +265,7 @@ def process_job_background(job_id: str):
                     )
 
                     # 1. Collect all unique HGVS strings found in the results table
-                    # We use these directly because VEPAnnotator now handles internal mapping (NG_ -> LRG_ -> NC_) 
+                    # We use these directly because VEPAnnotator now handles internal mapping (NG_ -> LRG_ -> NC_)
                     # and ensures the result is keyed by the original input.
                     all_hgvs = set()
                     for res in results:
@@ -305,7 +312,7 @@ def annotate_hgvs_background(job_id: str):
     """
     Independent background task to re-annotate an existing job's results
     with new or alternate HGVS notations via UTA network connection.
-    
+
     Args:
         job_id (str): The target job's identifier.
     """
@@ -343,16 +350,20 @@ def annotate_hgvs_background(job_id: str):
         hgvs_to_lookup = list(unique_hgvs - existing_alternatives)
 
         if hgvs_to_lookup:
-            all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
-            
+            vep_mode_val = job.hgvs_config.vep_mode.value if hasattr(job.hgvs_config.vep_mode, 'value') else job.hgvs_config.vep_mode
+            if vep_mode_val == "opencravat":
+                all_alternatives = {v: [v] for v in hgvs_to_lookup}
+            else:
+                all_alternatives = ensembl.get_equivalents_batch(hgvs_to_lookup)
+
             # 3. Update job
             if all_alternatives:
                 job_manager.update_job_hgvs_alternatives_bulk(job_id, all_alternatives)
-            
+
             logger.info(f"Job {job_id} batch HGVS annotation completed for {len(hgvs_to_lookup)} variants")
         else:
             logger.info(f"Job {job_id} already has all HGVS alternatives")
-            
+
         job_manager.update_job_status(job_id, JobStatus.COMPLETED)
 
     except Exception as e:

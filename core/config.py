@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     def get_cache_dir(self, assembly: str | None = None) -> str:
         if not assembly:
             return self.cache_dir
-        
+
         # If we have an assembly, we use the persistence manager to resolve the subfolder
         # relative to the base directory of the current cache_dir
         base_cache = self.cache_dir

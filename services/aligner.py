@@ -18,16 +18,16 @@ from utilities.tracy_pipeline import TracyPipeline
 logger = logging.getLogger(__name__)
 
 def run_alignment(
-    patient_ab1: str, 
-    reference_fasta: str, 
-    config: TracyConfig | None = None, 
-    hgvs_config: HGVSConfig | None = None, 
-    alignment_id: str = "results", 
+    patient_ab1: str,
+    reference_fasta: str,
+    config: TracyConfig | None = None,
+    hgvs_config: HGVSConfig | None = None,
+    alignment_id: str = "results",
     output_base_dir: str | None = None
 ) -> str:
     """
     Performs local alignment of a patient sequence against a reference.
-    
+
     Args:
         patient_ab1 (str): Path to the patient's trace file (.ab1).
         reference_fasta (str): Path to the reference FASTA file.
@@ -35,10 +35,10 @@ def run_alignment(
         hgvs_config (HGVSConfig | None): Optional HGVS annotation configuration.
         alignment_id (str): Identifier for the generated output folder.
         output_base_dir (str | None): Base directory for output. Uses a temp dir if None.
-        
+
     Returns:
         str: Path to the generated JSON results parsed from Tracy.
-        
+
     Raises:
         FileNotFoundError: If the input sequence files are missing.
         AlignmentError: If Tracy fails to produce JSON output.
@@ -67,13 +67,13 @@ def run_alignment(
 def get_read_preview(read_path: str) -> dict:
     """
     Extracts trace metadata and peak data for previewing.
-    
+
     Args:
         read_path (str): Path to the sequence file (e.g. .ab1).
-        
+
     Returns:
         dict: Trace properties formatted as a dictionary.
-        
+
     Raises:
         FileNotFoundError: If the read file doesn't exist.
     """

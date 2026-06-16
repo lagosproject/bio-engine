@@ -28,6 +28,8 @@ license = {text = "Proprietary"}
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -36,7 +38,13 @@ select = [
     "B",  # flake8-bugbear
     "UP", # pyupgrade
 ]
-ignore = []
+ignore = [
+    "E501", # line too long
+    "E701", # multiple statements on one line
+    "E402", # module level import not at top of file
+    "B008", # do not perform function call Depends in argument defaults
+    "B904", # raise exceptions with raise ... from within except clause
+]
 
 [tool.ruff.format]
 quote-style = "double"

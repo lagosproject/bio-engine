@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: MIT
 import logging
 import time
-import httpx
-from typing import List, Dict, Any
-from services.reference import get_lrg_mapping
-from core.proxy_manager import proxy_manager
 
 from core.cache import cache
+from core.proxy_manager import proxy_manager
+from services.reference import get_lrg_mapping
+
 logger = logging.getLogger(__name__)
 
 class EnsemblHGVS:
@@ -45,7 +44,7 @@ class EnsemblHGVS:
         # Now handle the reduced cases
         if not ref and not alt:
             return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}=" # No change
-        
+
         if len(ref) == 1 and len(alt) == 1:
             return f"{ac}:{hgvs_type}.{to_hgvs_pos(pos)}{ref}>{alt}"
         elif not ref: # Insertion
@@ -65,7 +64,7 @@ class EnsemblHGVS:
             self.base_url = "https://grch37.rest.ensembl.org"
         else:
             self.base_url = "https://rest.ensembl.org"
-            
+
         # We increase the timeout because batch recoding can be heavy on Ensembl's side
         self.client = proxy_manager.get_client("ensembl", timeout=timeout)
         self.headers = {
@@ -75,7 +74,7 @@ class EnsemblHGVS:
 
     # Removed __del__ as client is managed by ProxyManager
 
-    def get_equivalents_batch(self, hgvs_variants: List[str], chunk_size: int = 100) -> Dict[str, List[str]]:
+    def get_equivalents_batch(self, hgvs_variants: list[str], chunk_size: int = 100) -> dict[str, list[str]]:
         """
         Main entry point for batch HGVS lookup. handles NG_ -> LRG_ mapping.
         """
@@ -116,15 +115,15 @@ class EnsemblHGVS:
         for i in range(0, len(variants_to_lookup), chunk_size):
             chunk = variants_to_lookup[i:i + chunk_size]
             chunk_results = self._get_chunk_results(chunk)
-            
+
             for lookup_v, alternatives in chunk_results.items():
                 original_v = id_map.get(lookup_v, lookup_v)
                 final_results[original_v] = alternatives
-                
+
                 # Prepare for Redis set_many
                 cache_key = f"ensembl:equivalents:{self.assembly}:{original_v}"
                 new_cache_entries[cache_key] = alternatives
-        
+
         # Batch store in Redis
         if new_cache_entries:
             cache.set_many(new_cache_entries)
@@ -133,10 +132,10 @@ class EnsemblHGVS:
         for v in hgvs_variants:
             if v not in final_results or not final_results[v]:
                 final_results[v] = [v]
-        
+
         return final_results
 
-    def _get_chunk_results(self, chunk: List[str]) -> Dict[str, List[str]]:
+    def _get_chunk_results(self, chunk: list[str]) -> dict[str, list[str]]:
         endpoint = f"{self.base_url}/variant_recoder/human"
         payload = {
             "ids": chunk,
@@ -146,7 +145,7 @@ class EnsemblHGVS:
         results_map = {}
         try:
             response = self.client.post(endpoint, json=payload, headers=self.headers)
-            
+
             if response.status_code == 429:
                 retry_after = int(response.headers.get("Retry-After", 1))
                 time.sleep(retry_after)
@@ -157,14 +156,14 @@ class EnsemblHGVS:
 
             for item in data:
                 # Each item in the response list corresponds to one of our requested IDs
-                for allele, info in item.items():
+                for _allele, info in item.items():
                     if not isinstance(info, dict):
                         continue
-                    
+
                     input_id = info.get("input")
                     if not input_id:
                         continue
-                    
+
                     equivalents = set()
                     # Always include the input itself if it's a valid notation
                     equivalents.add(input_id)
@@ -173,13 +172,13 @@ class EnsemblHGVS:
                         vals = info.get(field, [])
                         if isinstance(vals, list):
                             equivalents.update(vals)
-                    
+
                     if input_id not in results_map:
                         results_map[input_id] = set()
                     results_map[input_id].update(equivalents)
 
             return {k: sorted(list(v)) for k, v in results_map.items()}
-                    
+
         except Exception as e:
             logger.error(f"Ensembl chunk lookup failed for {chunk}: {e}")
             return {v: [v] for v in chunk}

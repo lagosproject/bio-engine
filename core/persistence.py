@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 import logging
+
 """
 Persistence Management Module
 =============================
 
-This module provides the `PersistenceManager` class, responsible for 
-resolving and creating the necessary local directories (logs, jobs, cache) 
+This module provides the `PersistenceManager` class, responsible for
+resolving and creating the necessary local directories (logs, jobs, cache)
 based on the host operating system conventions.
 """
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class PersistenceManager:
     """
-    Manages local storage paths for the application, ensuring that 
+    Manages local storage paths for the application, ensuring that
     required directories exist across different operating systems.
     """
     def __init__(self, app_name: str = "ps-analyzer"):
@@ -34,7 +35,7 @@ class PersistenceManager:
         # We consider it portable if BIO_PORTABLE is set OR if a .portable file exists next to the exe
         exe_dir = self._get_exe_dir()
         is_portable = os.environ.get("BIO_PORTABLE") == "1"
-        
+
         if not is_portable:
             # Check for marker file in the executable directory or its parent (if in 'binaries' subfolder)
             if (exe_dir / ".portable").exists() or (exe_dir / "portable").exists():
