@@ -54,6 +54,10 @@ class HGVSConfig(BaseModel):
     vep_mode: VepMode = VepMode.OPENCRAVAT
     vep_path: str | None = None
     vep_data: str | None = None
+    # Opt-in: merge contiguous in-cis (homozygous) SNVs into a single delins so
+    # annotation reflects the true haplotype consequence. Off by default to keep
+    # the variants table unchanged unless explicitly enabled.
+    consolidate_mnv: bool = False
 
     @model_validator(mode='before')
     @classmethod

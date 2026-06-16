@@ -154,7 +154,8 @@ class TracyPipeline:
             new_data["ms_analyzer"] = {"original_orientation": "forward"}
 
         # ensure primary HGVS is populated for later batch annotation
-        self._ensure_hgvs_column(new_data, source_ac=source_ac)
+        consolidate_mnv = bool(getattr(hgvs_config, "consolidate_mnv", False)) if hgvs_config else False
+        self._ensure_hgvs_column(new_data, source_ac=source_ac, consolidate_mnv=consolidate_mnv)
 
         # Calculate readSeqRef
         try:
@@ -191,7 +192,7 @@ class TracyPipeline:
         # Normalize Basecalls and Variants
         self._normalize_basecalls_and_variants(new_data, original_data)
 
-    def _ensure_hgvs_column(self, data: dict[str, Any], source_ac: str | None = None):
+    def _ensure_hgvs_column(self, data: dict[str, Any], source_ac: str | None = None, consolidate_mnv: bool = False):
         """Ensures the HGVS column exists in variants table and populates with primary ID."""
         if variants := data.get("variants"):
             rows = variants.get("rows", [])
@@ -252,6 +253,18 @@ class TracyPipeline:
                     except Exception as e:
                         logger.error(f"Failed to format HGVS: {e}")
                         if len(row) < len(header): row.append("")
+
+                # Optional: merge contiguous in-cis SNVs into single delins rows.
+                if consolidate_mnv:
+                    try:
+                        from utilities.mnv_consolidation import consolidate_snv_runs
+                        new_cols, new_rows = consolidate_snv_runs(
+                            header, rows, source_ac, h_type,
+                            cds_start=cds_start, cds_end=cds_end)
+                        variants["columns"] = new_cols
+                        variants["rows"] = new_rows
+                    except Exception as ce:
+                        logger.error(f"MNV consolidation failed: {ce}")
             else:
                 for row in rows:
                     if len(row) < len(header):
