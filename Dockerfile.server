@@ -13,6 +13,10 @@ ARG no_proxy=$NO_PROXY
 COPY certs/ /usr/local/share/ca-certificates/
 RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates
 
+# Tell python tools (pip, requests) to use the system CA certificate bundle
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
 # Install bioinformatics tools and system dependencies
 RUN apt-get update && apt-get install -y \
     samtools \
