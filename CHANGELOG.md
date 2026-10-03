@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Changed
+- Bump bundled Tracy from v0.8.9 to v0.9.1 (Dockerfile.server). Tracy v0.9.1 fixes variant quality (`qual`/`filter`) being read from the wrong position of the trimmed trace, so some variants previously reported as `PASS` are now correctly `LowQual`; accepts IUPAC codes in reference FASTA files (converted to `N`) instead of failing; and adds bounds checks for short or poor traces.
+- Refresh pinned Python dependencies in requirements.txt (fastapi 0.142, pydantic 2.13, sqlalchemy 2.1, httpx 0.28, redis 8, biopython 1.88); add the previously missing `redis` pin.
+
 ## [v0.8.0] - 2026-06-11
 ### Added
 - Add local coordinate mapper for RefSeqGene assemblies
