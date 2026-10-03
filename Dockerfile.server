@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y \
 # Download and install Tracy (bio-informatics tool)
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "x86_64" ]; then TRACY_ARCH="amd64"; else TRACY_ARCH="arm64"; fi && \
-    curl -L "https://github.com/gear-genomics/tracy/releases/download/v0.8.9/tracy-v0.8.9-linux-${TRACY_ARCH}" -o /usr/local/bin/tracy \
+    curl -L "https://github.com/gear-genomics/tracy/releases/download/v0.9.1/tracy-v0.9.1-linux-${TRACY_ARCH}" -o /usr/local/bin/tracy \
     && chmod +x /usr/local/bin/tracy
 
 WORKDIR /app
